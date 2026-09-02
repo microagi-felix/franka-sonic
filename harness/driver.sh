@@ -57,8 +57,12 @@ if command -v flock >/dev/null 2>&1; then
 fi
 
 # --------------------------------------------------------------------- status
+# Only log lines ("- <date> …") count as markers; the file header quotes the
+# marker syntax itself and must never be read as a verdict.
+log_lines() { grep -E '^[[:space:]]*-[[:space:]]' "$STATUS"; }
+
 status_pass() {           # $1 = phase
-  grep -qE "GATE $1: PASS" "$STATUS"
+  log_lines | grep -qE "GATE $1: PASS"
 }
 
 # The last stop marker in STATUS.md after the previous phase's PASS.
@@ -66,10 +70,11 @@ status_pass() {           # $1 = phase
 last_marker() {           # $1 = previous phase or ""
   local start=1 n
   if [ -n "${1:-}" ]; then
-    n=$(grep -nE "GATE $1: PASS" "$STATUS" | tail -1 | cut -d: -f1)
+    n=$(grep -nE "^[[:space:]]*-[[:space:]].*GATE $1: PASS" "$STATUS" | tail -1 | cut -d: -f1)
     [ -n "$n" ] && start=$((n + 1))
   fi
   tail -n "+$start" "$STATUS" \
+    | grep -E '^[[:space:]]*-[[:space:]]' \
     | grep -oE "GATE P[0-4]: PASS|BLOCKED:|DRIVER: resume" | tail -1
 }
 
