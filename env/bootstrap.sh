@@ -36,7 +36,7 @@ worklog() {  # append a timestamped line to the campaign WORKLOG (rule h)
 # 1. isaac-sim group membership. /isaac-sim is drwxr-x--- isaac-sim:isaac-sim,
 #    so without it neither the Kit interpreter nor python.sh is even visible.
 # ---------------------------------------------------------------------------
-step "1/10 isaac-sim group membership"
+step "1/11 isaac-sim group membership"
 if id -nG | grep -qw isaac-sim; then
   skip "already in group isaac-sim"
 else
@@ -56,13 +56,51 @@ fi
 ISAAC_OK=1
 if [ ! -x "$KIT_PY" ] || [ ! -x "$PYSH" ]; then
   ISAAC_OK=0
-  warn "/isaac-sim is not readable in this session yet — Isaac steps (5, 6, 9) will be skipped"
+  warn "/isaac-sim is not readable in this session yet — Isaac steps (2, 6, 7, 10) will be skipped"
 fi
 
 # ---------------------------------------------------------------------------
-# 2. tmux (not in the image; overlay-only, so it recurs per fresh pod)
+# 2. Kit's writable folders. Kit runs in PORTABLE mode rooted at /isaac-sim/kit
+#    (verified 2026-09-02 with carb.tokens: ${data} ${cache} ${logs} all resolve
+#    under /isaac-sim/kit), but the image ships kit/cache root-owned and
+#    kit/data, kit/logs absent. A group-member user therefore cannot create the
+#    DerivedDataCache, the RTX shader database or user.config.json, the
+#    renderer never comes up, and the first camera render dies inside the
+#    replicator annotator ("TypeError: unsupported operand type(s) for -:
+#    'NoneType' and 'NoneType'" from gym.make) — p0.smoke run 1, 2026-09-02.
+#
+#    Writing outside ~ is rule j; the orchestrator (Felix) granted the
+#    exception for exactly this ownership change on 2026-09-02. Overlay-only:
+#    the ownership is lost on every fresh pod and this step recurs. If a re-run
+#    still shows "Permission denied" under /isaac-sim, widen KIT_DIRS to
+#    /isaac-sim/kit (same authorisation).
 # ---------------------------------------------------------------------------
-step "2/10 tmux"
+step "2/11 Kit writable folders under /isaac-sim (ownership, rule-j exception)"
+if [ "$ISAAC_OK" = "0" ]; then
+  skip "/isaac-sim not accessible yet"
+else
+  KIT_DIRS=(/isaac-sim/kit/cache /isaac-sim/kit/logs /isaac-sim/kit/data /isaac-sim/extscache)
+  need=()
+  for d in "${KIT_DIRS[@]}"; do
+    if [ -d "$d" ] && [ -w "$d" ] && [ "$(stat -c %U "$d")" = "$USER" ]; then
+      continue
+    fi
+    need+=("$d")
+  done
+  if [ "${#need[@]}" -eq 0 ]; then
+    skip "already owned by $USER: ${KIT_DIRS[*]}"
+  else
+    sudo mkdir -p "${need[@]}"
+    sudo chown -R "$USER:research" "${need[@]}"
+    worklog "sudo mkdir -p + chown -R $USER:research ${need[*]} — Kit's portable root is /isaac-sim/kit and was not writable (orchestrator-authorised rule-j exception, 2026-09-02; overlay-only, recurs per fresh pod)"
+    ok "owned by $USER:research now: ${need[*]}"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 3. tmux (not in the image; overlay-only, so it recurs per fresh pod)
+# ---------------------------------------------------------------------------
+step "3/11 tmux"
 if command -v tmux >/dev/null 2>&1; then
   skip "tmux present at $(command -v tmux)"
 else
@@ -72,9 +110,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. directory layout + the two gitignored symlinks into it
+# 4. directory layout + the two gitignored symlinks into it
 # ---------------------------------------------------------------------------
-step "3/10 directory layout and symlinks"
+step "4/11 directory layout and symlinks"
 mkdir -p "$HOME/code" "$HOME/code/upstream" "$HOME/env" \
          "$HOME/runs/franka-sonic" "$HOME/data/franka-sonic" \
          "$HOME/agents/2026-09-01_franka-sonic"
@@ -92,9 +130,9 @@ link "$HOME/data/franka-sonic" "$REPO_ROOT/data"
 ok "layout ready (runs -> ~/runs/franka-sonic, data -> ~/data/franka-sonic)"
 
 # ---------------------------------------------------------------------------
-# 4. the franka sim repo, pinned
+# 5. the franka sim repo, pinned
 # ---------------------------------------------------------------------------
-step "4/10 franka-bimanual-isaac-sim @ ${FR3_COMMIT:0:7}"
+step "5/11 franka-bimanual-isaac-sim @ ${FR3_COMMIT:0:7}"
 if [ -d "$FR3_REPO/.git" ]; then
   git -C "$FR3_REPO" fetch --quiet origin main || warn "fetch failed — using what is on disk"
 else
@@ -114,7 +152,7 @@ fi
 git -C "$FR3_REPO" --no-pager log -1 --format='      HEAD %h %s'
 
 # ---------------------------------------------------------------------------
-# 5. the sim stack, installed "the cluster.Dockerfile way" but into ~ .
+# 6. the sim stack, installed "the cluster.Dockerfile way" but into ~ .
 #
 #    Every install is --no-deps: pip cannot see Kit's prebundled torch/numpy
 #    and would shadow them (numba 0.59 hard-requires numpy<1.27, so a numpy 2
@@ -130,7 +168,7 @@ git -C "$FR3_REPO" --no-pager log -1 --format='      HEAD %h %s'
 #    rollout_client; pynput: rollout_client; scipy: retarget/geometry paths).
 #    avp-stream is the Vision Pro teleop device and is best-effort only.
 # ---------------------------------------------------------------------------
-step "5/10 sim stack into PYTHONUSERBASE=$USERBASE_FR3"
+step "6/11 sim stack into PYTHONUSERBASE=$USERBASE_FR3"
 if [ "$ISAAC_OK" = "0" ]; then
   skip "/isaac-sim not accessible yet"
 else
@@ -189,12 +227,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. verify the sim stack through python.sh (the only interpreter that can
+# 7. verify the sim stack through python.sh (the only interpreter that can
 #    import isaacsim — setup_python_env.sh is what puts it on PYTHONPATH).
 #    Run from $HOME on purpose: from the repo, `import evaluation` would
 #    resolve via cwd and hide a broken editable install.
 # ---------------------------------------------------------------------------
-step "6/10 verify the sim stack"
+step "7/11 verify the sim stack"
 if [ "$ISAAC_OK" = "0" ]; then
   skip "/isaac-sim not accessible yet"
 else
@@ -204,16 +242,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. GR00T venv (already on the pod: py3.10, torch 2.7.1+cu128)
+# 8. GR00T venv (already on the pod: py3.10, torch 2.7.1+cu128)
 # ---------------------------------------------------------------------------
-step "7/10 GR00T venv"
+step "8/11 GR00T venv"
 "$GR00T_PY" -c "import gr00t; print('gr00t', getattr(gr00t, '__version__', 'ok'))"
 ok "$GR00T_PY imports gr00t"
 
 # ---------------------------------------------------------------------------
-# 8. GR00T N1.7-3B base weights (~6 GB) into the existing HF cache
+# 9. GR00T N1.7-3B base weights (~6 GB) into the existing HF cache
 # ---------------------------------------------------------------------------
-step "8/10 nvidia/GR00T-N1.7-3B in the HF cache"
+step "9/11 nvidia/GR00T-N1.7-3B in the HF cache"
 HF_HUB="${HF_HOME:-$HOME/.cache/huggingface}/hub"
 if [ -d "$HF_HUB/models--nvidia--GR00T-N1.7-3B/snapshots" ] \
    && [ -n "$(ls -A "$HF_HUB/models--nvidia--GR00T-N1.7-3B/snapshots" 2>/dev/null)" ]; then
@@ -227,7 +265,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 9. gear_sonic into its OWN user-site so its pins cannot fight the sim's.
+# 10. gear_sonic into its OWN user-site so its pins cannot fight the sim's.
 #    Installed WITH deps on purpose (it is a normal python package with a real
 #    dependency set); if that resolution fights Kit's prebundle, the failure is
 #    reported here and gate P0 records it as a WARN rather than a stop.
@@ -244,7 +282,7 @@ fi
 #      scoped to this ONE pip call through GIT_CONFIG_COUNT — never a global
 #      git config, which would silently change every other clone on the pod.
 # ---------------------------------------------------------------------------
-step "9/10 gear_sonic into PYTHONUSERBASE=$USERBASE_SONIC"
+step "10/11 gear_sonic into PYTHONUSERBASE=$USERBASE_SONIC"
 if [ "$ISAAC_OK" = "0" ]; then
   skip "/isaac-sim not accessible yet"
 elif PYTHONUSERBASE="$USERBASE_SONIC" "$PYSH" -c "import gear_sonic" >/dev/null 2>&1; then
@@ -265,9 +303,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 10. brain repo up to date (read-only reference on the pod)
+# 11. brain repo up to date (read-only reference on the pod)
 # ---------------------------------------------------------------------------
-step "10/10 brain repo"
+step "11/11 brain repo"
 git -C "$HOME/microagi-felix-brain" pull --ff-only || warn "brain pull skipped/failed (non-fatal)"
 ok "brain repo at $(git -C "$HOME/microagi-felix-brain" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
@@ -280,7 +318,7 @@ Open a NEW ssh session (or run `newgrp isaac-sim`) and re-run:
 
     bash env/bootstrap.sh
 
-Steps 5, 6 and 9 were skipped; everything else is done and idempotent.
+Steps 2, 6, 7 and 10 were skipped; everything else is done and idempotent.
 ================================================================================
 MSG
   exit 3

@@ -135,14 +135,16 @@ class Run:
                 {
                     "lane": self.lane,
                     "stage": self.stage,
-                    "args": vars(self.args),
+                    # argparse's namespace carries the `fn=cmd_run` callback from
+                    # set_defaults; drop it or json.dumps raises on the stamp.
+                    "args": {k: v for k, v in vars(self.args).items() if k != "fn"},
                     "hostname": socket.gethostname(),
                     "date": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                     "cuda_visible_devices": self.devices,
                     "run_dir": str(self.dir),
                     "repo_shas": repo_shas(),
                 },
-                indent=2, sort_keys=True,
+                indent=2, sort_keys=True, default=str,
             ) + "\n"
         )
 
@@ -189,23 +191,29 @@ def wait_for_port(host: str, port: int, timeout: float = 180.0) -> bool:
     return False
 
 
-def stop_pid(pid: int, run: Run, label: str) -> None:
-    """SIGTERM then SIGKILL a PID WE recorded. Never by pattern (rule b)."""
+def stop_proc(proc: subprocess.Popen, run: Run, label: str) -> None:
+    """SIGTERM then SIGKILL a child WE started. Never by pattern (rule b).
+
+    Uses Popen.wait, not `kill -0`: a killed child stays a zombie until its
+    parent reaps it, and `kill -0` on a zombie succeeds — the first version
+    of this helper reported "survived SIGKILL" for exactly that reason.
+    """
+    if proc.poll() is not None:
+        print(f"[bakeoff] {label} pid {proc.pid} already exited (rc={proc.returncode})")
+        (run.dir / "out" / f"{label}.pid").unlink(missing_ok=True)
+        return
     for sig, wait in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
         try:
-            os.kill(pid, sig)
+            proc.send_signal(sig)
+            proc.wait(timeout=wait)
+        except subprocess.TimeoutExpired:
+            continue
         except ProcessLookupError:
-            print(f"[bakeoff] {label} pid {pid} already gone")
-            return
-        for _ in range(wait * 2):
-            time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                print(f"[bakeoff] {label} pid {pid} stopped ({sig.name})")
-                (run.dir / "out" / f"{label}.pid").unlink(missing_ok=True)
-                return
-    print(f"[bakeoff] WARNING: {label} pid {pid} survived SIGKILL", file=sys.stderr)
+            pass
+        print(f"[bakeoff] {label} pid {proc.pid} stopped ({sig.name})")
+        (run.dir / "out" / f"{label}.pid").unlink(missing_ok=True)
+        return
+    print(f"[bakeoff] WARNING: {label} pid {proc.pid} survived SIGKILL", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------- stages
@@ -285,7 +293,7 @@ def stage_p0_smoke(run: Run) -> int:
         print(f"[bakeoff] stub server up (pid {server.pid})")
         return run.tee(eval_cmd, cwd=FR3_REPO, env=env)
     finally:
-        stop_pid(server.pid, run, "stub_server")
+        stop_proc(server, run, "stub_server")
 
 
 def stage_not_implemented(run: Run) -> int:
