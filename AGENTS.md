@@ -63,9 +63,13 @@ folders and exit codes, never prose. A gate that "basically passes" has failed.
 
 ## g. Commit after every completed step
 
-Append a dated line to `plan/STATUS.md`, `git commit`, `git push`. The
-orchestrator on the Mac reads STATUS.md and the tmux pane — that is the only
-channel. Push, or it did not happen.
+Append a dated line to `plan/STATUS.md`, `git commit`, `git pull --rebase`,
+`git push`. The orchestrator on the Mac reads STATUS.md and the tmux pane —
+that is the only channel. Push, or it did not happen.
+
+STATUS.md is **append-only**: never rewrite, reorder or tidy it. More than one
+agent pushes to `main` (the interactive session, the driver's phase sessions),
+so always `git pull --rebase` immediately before pushing.
 
 ## h. Log pod-state mutations outside git
 
@@ -91,6 +95,20 @@ tail -50 <run>/logs/run.log
 - any change to **another user's files**
 - using any GPU that is **not idle** per the allocator
 
+**This rule is not "no sudo".** Overlay-only, pod-local `sudo` that the
+campaign needs is expected — do it, make it idempotent in `env/bootstrap.sh`,
+and log it in the WORKLOG. The standing example, needed on every fresh pod:
+
+```bash
+sudo chown -R $USER:research /isaac-sim/kit/cache /isaac-sim/kit/logs \
+                             /isaac-sim/kit/data /isaac-sim/extscache
+```
+
+Kit writes its caches and config under `/isaac-sim/kit`; without write access
+the RTX renderer fails to create a scene renderer and **every Isaac env
+creation dies** (it broke the first P0 smoke). Widen to `/isaac-sim/kit` if
+more `Permission denied` appears.
+
 ## k. Lustre is 99 % full
 
 1.3 TB free on a 70 TB shared filesystem. Keep datasets and checkpoints small,
@@ -101,3 +119,37 @@ reflex.
 
 This repo and `plan/STATUS.md` are the entire interface to the orchestrator.
 No side channels, no assumptions that anyone is watching the terminal.
+
+## m. The driver owns the phase loop
+
+`harness/driver.sh` runs in tmux window `bakeoff:driver` and walks P0 → P4
+unattended, one fresh `claude -p --effort xhigh` session per phase from
+`plan/prompts/PN.md`, 3 attempts of at most 6 h each, stopping at the first
+`BLOCKED:`. Consequences for you:
+
+- **The interactive window `bakeoff:claude` is for P0 and for debugging only.**
+  Never run a phase by hand that the driver is running: two sessions in one
+  working tree fight over the index and the GPU claims.
+- If you are a phase session: do your phase, pass its gate, write
+  `GATE PN: PASS`, push, **end the turn**. Never start the next phase — the
+  driver does that.
+- Stuck? `BLOCKED: <reason>`, push, end the turn. The driver stops the
+  campaign; a human clears it by appending `DRIVER: resume` to STATUS.md.
+- Start/stop: see README.md. `tmux kill-window -t bakeoff:driver` stops it.
+
+## n. Subagents are allowed — under the same rules
+
+Use the `Agent` tool (`.claude/agents/executor.md`) for parallelisable,
+well-scoped work: authoring configs while a conversion runs, an oracle replay
+while a fine-tune trains, a retarget batch on CPU. Rules that do not bend:
+
+- **Only the parent acquires GPUs.** The parent runs `harness/gpus.py acquire`
+  and hands the exported `CUDA_VISIBLE_DEVICES` set to the subagent's commands.
+  Never a second allocation for the same job, and at most **one GPU-heavy job
+  per allocated device set**.
+- **Foreground bounded waits only** — background wakeups fail silently in
+  subagents. Same `for i in $(seq …); do kill -0 …; sleep 15; done` pattern.
+- **No `git push` from a subagent.** It reports back; the parent commits,
+  appends to STATUS.md and pushes.
+- Parallel subagents only for CPU or authoring work; serialise anything that
+  touches a GPU or the git index.

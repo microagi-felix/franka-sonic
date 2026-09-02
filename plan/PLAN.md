@@ -1,4 +1,4 @@
-# PLAN — FR3 handover bake-off (condensed from the brain wiki, rev 3b)
+# PLAN — FR3 handover bake-off (condensed from the brain wiki, rev 3c)
 
 Source of record: `microagi-felix-brain/wiki/fr3-handover-bakeoff-plan.md` +
 `wiki/bakeoff-instance-harness-proposal.md`. This file is the executable
@@ -27,11 +27,47 @@ lanes log a success rate.** A pipeline proof, not a result.
 - Pod `franka-sonic` is ours with all 8 GPUs; **lanes run in parallel** via
   `harness/gpus.py` (A fine-tune 2 ‖ SONIC RL 4 ‖ MimicGen/eval 1–2).
 - Allocator hands out only devices with **< 1 GiB used** until infra confirms
-  exclusivity (six of eight showed foreign memory on 2026-09-01).
+  exclusivity (six of eight showed foreign memory on 2026-09-01; on 2026-09-03
+  only devices 5 and 7 were allocatable — plan for **2**, take more if the
+  allocator offers them).
+
+## Fine-tune alignment protocol (rev 3c — both lanes identical but the action keys)
+
+Verified against NVIDIA's own SONIC post-train (`GR00T-WholeBodyControl`
+`docs/source/tutorials/vla_workflow.md`, `vla_inference.md`,
+`gear_sonic/data/features_sonic_vla.py`) and Isaac-GR00T @ab88b50. NVIDIA's
+SONIC post-train **is the ordinary GR00T fine-tune** — same script, same
+defaults; only the embodiment tag and the modality config differ.
+
+| knob | lane A | lane B |
+|---|---|---|
+| tag / projector | `NEW_EMBODIMENT` (id 10, fresh action head) | `NEW_EMBODIMENT` (id 10, fresh action head) |
+| script | `gr00t/experiment/launch_finetune.py` | same |
+| hyperparameters | `--num-gpus 2 --max-steps 2000 --save-steps 500 --global-batch-size 32 --color-jitter-params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 --dataloader-num-workers 4`; default LR/optimizer, no LoRA | same |
+| data rate | **50 Hz** (recorder `--rate 50`) | same frames, second action table |
+| action horizon | **40** (`delta_indices = range(40)`) | 40 |
+| action encoding | `left_arm 7 \| left_grip 1 \| right_arm 7 \| right_grip 1`, **ABSOLUTE**, `NON_EEF` | `motion_token 64 \| left_grip 1 \| right_grip 1`, **ABSOLUTE**, `NON_EEF` |
+| state keys | joints 14 + grippers 2 (+ EEF poses if present) | same |
+| video | `top` + `wrist_left` + `wrist_right`, one resolution | same |
+| language | `annotation.human.task_description` = "hand the block from the left arm to the right" | same |
+| inference | **2.5 Hz replan**, 40-step chunk played at 50 Hz (`--rate 50 --replan-every 20`) | same |
+| labels | recorded joint targets | encoder over the recorded joint trajectory (offline) |
+
+Consequences that are easy to get wrong:
+
+- The recorder runs at **50 Hz** (`scripted_source_demos.py --rate 50`), not the
+  script's 30 Hz default. Both datasets are the **same frames** with two action
+  tables.
+- ABSOLUTE in **both** lanes: lane A's arms are absolute joint targets, so the
+  only difference to lane B is the action space itself.
+- 2000 steps for both lanes in the prototype (10 % of NVIDIA's 20 000).
+  **Never compare lanes trained for different step counts.**
+- Rev 2's "horizon 16, RELATIVE arms, 30 Hz" is superseded — if you find those
+  numbers anywhere, they are stale.
 
 ## Comparability protocol (the reason this is a bake-off and not two demos)
 
-1. **Collect episodes ONCE** on the plain robot: joint trajectories +
+1. **Collect episodes ONCE** on the plain robot at 50 Hz: joint trajectories +
    Cartesian commands + 3 cameras.
 2. **Derive lane B's labels offline** — run the trained SONIC encoder
    (robot-motion mode, needs the future window, which offline has) over each
@@ -46,9 +82,11 @@ lanes log a success rate.** A pipeline proof, not a result.
    Report both next to the two policy numbers.
 4. **Decoder lives in the policy server.** Both lanes present the identical
    contract to the sim: `{state16, 3 cams} -> [Lq7, Lg, Rq7, Rg]` joint
-   targets, one registered joint client, same binding, same rubric, same
-   `--rate`. Run both at `--rate 50`. The Cartesian/openpi route for lane A is
-   an optional third run, not the baseline.
+   targets, one joint client, same binding, same rubric, same `--rate 50`. The
+   Cartesian/openpi route for lane A is an optional third run, not the baseline.
+   Prefer making the **server** speak the wire the stock `ZmqAct` client
+   already speaks over patching the franka repo's client registry (that repo is
+   upstream: never commit in it).
 
 ## Task and scoring
 
@@ -63,12 +101,43 @@ Per lane, over 20 seeded rollouts: per-milestone reach rate, full-success
 rate, steps-to-success, action jerk, GPU-hours, plus the two oracle replays.
 "Better" = full-success rate first, milestones second.
 
+## Artifact conventions (gates read these paths — keep to them)
+
+Run folders come from `harness/bakeoff.py` (AGENTS.md rule e), under
+`~/runs/franka-sonic/<lane>/<YYYY-MM-DD>_<stage>/`. The gates search by name
+substring, so the *stage* names matter:
+
+| phase | run folder (stage substring) | artifact the gate reads |
+|---|---|---|
+| P0 | `shared/…_p0.smoke` | `out/eval/eval_results.csv` |
+| P0 | `shared/…_demos` | `out/*.hdf5` (sources + generated) |
+| P1 | `shared/…_dataset` or `lane_a/…_dataset` | `out/gr00t_v2/meta/modality.json` |
+| P1 | `lane_a/…_finetune` | `out/checkpoints/checkpoint-2000/` |
+| P1 | `lane_a/…_open_loop` | `logs/run.log` (+ `out/open_loop_eval.json`) |
+| P1 | `lane_a/…_eval` | `out/eval/eval_results.csv` ≥ 20 episodes |
+| P1 | `lane_a/…_oracle_a` | `out/eval/eval_results.csv` |
+| P2 | repo `harness/lane_b/` | `dual_fr3.xml`, `robots_dual_fr3.py`, `sonic_dual_fr3.yaml` |
+| P2 | `lane_b/…_motion_lib` | `out/motions/*.pkl` (≥ 100) |
+| P2 | `lane_b/…_export_onnx` | `out/model_encoder.onnx`, `out/model_decoder.onnx` |
+| P2 | `lane_b/…_decoder_replay` | `out/replay.json` with `mean_joint_error_rad` |
+| P3 | `lane_b/…_label_tokens` | `out/gr00t_v2_sonic/meta/modality.json` |
+| P3 | `lane_b/…_finetune` | `out/checkpoints/checkpoint-2000/` |
+| P3 | `lane_b/…_eval` | `out/eval/eval_results.csv` ≥ 20 episodes |
+| P3 | `lane_b/…_oracle_b` | `out/eval/eval_results.csv` |
+| P4 | repo | `plan/REPORT.md` with a table naming both lanes |
+
+Code lives in the repo (`harness/lane_a/`, `harness/lane_b/`, `harness/data/`,
+`harness/report/`), never in a run folder; data and logs live in run folders,
+never in the repo.
+
 ## Phases and gates
 
 ### P0 — environments + demo set (shared) — GATE `harness/gates/p0.sh`
 
 - [ ] `env/bootstrap.sh` completes cleanly and is idempotent
-- [ ] user in group `isaac-sim`; `/isaac-sim/python.sh` executable
+- [ ] user in group `isaac-sim`; `/isaac-sim/python.sh` executable; Kit's
+      portable-mode dirs writable (`/isaac-sim/kit/{cache,logs,data}`,
+      `/isaac-sim/extscache` — see AGENTS.md rule j exception)
 - [ ] sim stack imports: `import isaacsim, isaaclab; import evaluation, tasks`
       under `PYTHONUSERBASE=~/env/pyuser-fr3 /isaac-sim/python.sh`
 - [ ] `evaluation.eval --help` runs
@@ -80,63 +149,88 @@ rate, steps-to-success, action jerk, GPU-hours, plus the two oracle replays.
 
 Then the demo set (P0 continued, gated by the replay check):
 
-- [ ] `mimic/scripts/scripted_source_demos.py --headless --num_demos 10`
+- [ ] `mimic/scripts/scripted_source_demos.py --headless --num_demos 10
+      --rate 50` (**50 Hz**, rev 3c — the script defaults to 30)
 - [ ] `annotate_sources.py --auto` -> `generate_parallel.py --total 80 --procs 4`;
       record the keep-rate (target ≥ 50 %)
-- [ ] `export_generated.py` -> `convert_sim_hdf5.py` (LeRobot v3) ->
-      `convert_v3_to_v2.py` (GR00T v2) + `meta/modality.json`
-      (state `joint_pos_l 0:7`, `joint_pos_r 7:14`, `grip 14:16`; action same
-      split; video `top`, `wrist_left`, `wrist_right`)
+- [ ] `export_generated.py` -> HDF5 in the `…_demos` run folder
 - [ ] replay gate: one episode stepped through `…-JointPos-v0` reaches
       `handover_success = True`
+- [ ] the LeRobot v3 -> GR00T v2 conversion may be done here or at the start of
+      P1; **the p1 gate owns it** (`out/gr00t_v2/meta/modality.json`)
 
 ### P1 — lane A: GR00T direct — GATE `harness/gates/p1.sh`
 
-- [ ] `modality_config_dual_fr3.py`: video `[0]`, state current, action
-      `delta_indices=range(16)`, arms `RELATIVE / NON_EEF`, grippers
-      `ABSOLUTE`, horizon 16; registered under `EmbodimentTag.NEW_EMBODIMENT`
-- [ ] `gr00t_finetune … --embodiment-tag NEW_EMBODIMENT --modality-config-path …
-      --max-steps 2000 --save-steps 500 --global-batch-size 32` (2 GPUs)
-- [ ] `open_loop_eval.py` on ckpt 500/1000/1500/2000 -> MSE falls
-- [ ] joint policy server (GR00T -> joint chunk) + registered joint client
-      closes the loop at `--rate 50`
-- [ ] 20 rollouts evaluated, success rate logged
+- [ ] dataset: HDF5 -> LeRobot v3 -> GR00T v2 (`convert_v3_to_v2.py`) +
+      `meta/modality.json` at **50 Hz** (state `joint_pos_l 0:7`,
+      `joint_pos_r 7:14`, `grip 14:16`; action the same split; video `top`,
+      `wrist_left`, `wrist_right`; `annotation.human.task_description`)
+- [ ] `harness/lane_a/modality_config_dual_fr3.py`: video `[0]`, state current,
+      action `delta_indices = range(40)`, arms **ABSOLUTE / NON_EEF**, grippers
+      ABSOLUTE; registered under `EmbodimentTag.NEW_EMBODIMENT`
+- [ ] `launch_finetune.py --base-model-path nvidia/GR00T-N1.7-3B
+      --embodiment-tag NEW_EMBODIMENT --modality-config-path …
+      --num-gpus 2 --max-steps 2000 --save-steps 500 --global-batch-size 32`
+      with the SONIC-tutorial colour-jitter params
+- [ ] `open_loop_eval.py` on ckpt 500/1000/1500/2000 -> MSE trend recorded
+- [ ] policy server (GR00T -> 40-step joint chunk) + a joint client that speaks
+      `{state16, 3 cams} -> [Lq7, Lg, Rq7, Rg]`
+- [ ] `evaluation.eval --embodiment franka_dual --rate 50 --replan-every 20
+      --rollouts 20` -> eval run folder
+- [ ] A-oracle replay -> its own run folder with an `eval_results.csv`
 
 ### P2 — lane B-1: dual-FR3 SONIC embodiment — GATE `harness/gates/p2.sh`
 
-- [ ] `dual_fr3.xml` (2× menagerie `franka_fr3` at rig poses, fixed bases, no
-      freejoint) + URDF/USD + `gear_sonic/…/robots/dual_fr3.py` (14 DoF, 2×7
-      actuator groups, Isaac<->MuJoCo maps) + order converter
-- [ ] `sonic_dual_fr3.yaml`: `anchor_body` = a fixed base body,
+- [ ] `harness/lane_b/dual_fr3.xml` (2× menagerie `franka_fr3` at rig poses,
+      fixed bases, no freejoint) + `harness/lane_b/robots_dual_fr3.py`
+      (14 DoF, 2×7 actuator groups, Isaac<->MuJoCo maps, order converter),
+      installed into `gear_sonic/envs/manager_env/robots/dual_fr3.py`
+- [ ] `harness/lane_b/sonic_dual_fr3.yaml`: `anchor_body` = a fixed base body,
       `vr_3point_body` = [left hand, right hand, base], `reward_point_body` =
       the two hands; **disable** `foot_pos_xyz`, `feet_acc`,
       `undesired_contacts`; keep `ee_body_pos_adaptive`, tracking terms,
       `joint_limit`, `action_rate_l2`; robot-motion encoder only,
       `smpl_motion_file: dummy`, soma off
 - [ ] body-name overrides pass a `num_envs=1` smoke
-- [ ] motion library = GMR arms-only retarget of a ~1k-clip upper-body subset
-      **plus the P0 demos as clips** + `_M` mirrors
-- [ ] RL on 4 GPUs (≈2048–4096 envs), 1–2 h
+- [ ] motion library = GMR arms-only retarget of a ~1k-clip BONES-SEED
+      upper-body subset (GMR cloned to `~/code/upstream/GMR` @bb1bbe4 and
+      registered per `wiki/gmr-new-robot-recipe.md`) **plus the P0 demos as
+      clips** + `_M` mirrors
+- [ ] RL (`train_agent_trl.py`): `num_envs=1` smoke, then a 1–2 h run on the
+      devices the allocator gives (4 if available, 2 today)
 - [ ] `eval_agent_trl.py +export_onnx_only=True` -> encoder + decoder ONNX
 - [ ] decoder replays a demo clip with mean joint error < ~0.1 rad
+      (`out/replay.json`)
 
 ### P3 — lane B-2: GR00T over SONIC — GATE `harness/gates/p3.sh`
 
-- [ ] `label_tokens.py`: encoder ONNX over each demo's joint trajectory ->
-      `token (T,64)`, subsampled to the policy rate (50 Hz encoder, nearest)
+- [ ] `harness/lane_b/label_tokens.py`: encoder ONNX over each demo's joint
+      trajectory at **50 Hz** -> `token (T,64)` per frame
 - [ ] dataset variant with `action = [token 64 | grip 2]`, modality config
-      `ABSOLUTE / NON_EEF`; same fine-tune budget as P1
-- [ ] policy server = GR00T -> token chunk -> decoder ONNX at 50 Hz with its
-      own proprio history; clip `|t| <= 1.25` before the decoder; self-encode a
-      "hold" token from the ready pose for resets
-- [ ] 20 rollouts evaluated, success rate logged
+      **ABSOLUTE / NON_EEF, horizon 40**; the P1 fine-tune recipe unchanged
+- [ ] policy server = GR00T -> token chunk -> **decoder inside the server** at
+      50 Hz with its own proprio history; clip `|t| <= 1.25` before the decoder;
+      self-encode a "hold" token from the ready pose for resets
+- [ ] `evaluation.eval … --rate 50 --replan-every 20 --rollouts 20`
+- [ ] B-oracle replay (encoder tokens -> decoder, no VLA) -> its own run folder
 
 ### P4 — compare + decide — GATE `harness/gates/p4.sh`
 
-- [ ] one table: success / milestones / steps-to-success / action jerk /
-      wall-clock / GPU-h per lane, plus A-oracle and B-oracle
-- [ ] decision memo: which lane scales, what the real run needs (demo count,
-      full retarget, 4096 envs × 8 GPUs, longer fine-tune)
+- [ ] `harness/report/aggregate.py` reads both eval run folders + both oracles
+- [ ] `plan/REPORT.md`: one table — per-milestone rate, full-success rate,
+      steps-to-milestone, action jerk, wall-clock, GPU-hours per lane, plus
+      A-oracle and B-oracle
+- [ ] scale-up deltas list: what the real run needs (demo count, full retarget,
+      4096 envs × 8 GPUs, 20 000 fine-tune steps)
+
+## Autonomous driver
+
+`harness/driver.sh` runs the phases unattended in tmux window `bakeoff:driver`:
+for each phase it checks `plan/STATUS.md` for `GATE PN: PASS`, and otherwise
+runs `claude -p --dangerously-skip-permissions --effort xhigh` on
+`plan/prompts/PN.md` (fresh context per attempt, up to 3 attempts, `timeout 6h`
+each). It stops at the first `BLOCKED:`. See README.md for start/stop and the
+`DRIVER: resume` escape hatch.
 
 ## Work-package parallelism (8 GPUs)
 
@@ -146,22 +240,27 @@ Then the demo set (P0 continued, gated by the replay check):
 | A | GR00T fine-tune | 2 |
 | B | SONIC RL | 4 |
 
-Never a training rank and an Isaac eval on the same device.
+Never a training rank and an Isaac eval on the same device. Only devices with
+< 1 GiB used are allocatable — with 2 today, run the lanes sequentially and say
+so in STATUS.md.
 
 ## Contracts that bite
 
 - Quaternions: the franka repo is **wxyz** internally, the policy **wire** is
-  **xyzw**; `evaluation/codec.py` owns that conversion. The dataset `ee_pose`
-  is **rot6d**, not a quaternion. The SONIC pkl boundary (`root_rot` wxyz) is
-  ours to get right. Assert with a known pose at each boundary.
-- Rates: recorder 30 Hz, SONIC decoder 50 Hz, GR00T chunk = horizon 16 at the
-  training fps. Datasets at 30 Hz; hold the token between VLA frames to feed
-  the decoder at 50.
-- Token bounds `|t| <= 1.25` (FSQ grid) — clip the VLA output.
-- Safety caps from `policy_convention.yaml`: 0.40 m / 0.60 rad per step,
-  `control_hz: 15` global default.
+  **xyzw**; `evaluation/codec.py` owns that conversion. The dataset `ee_pose` is
+  **rot6d**, not a quaternion. The SONIC pkl boundary (`root_rot` wxyz) is ours
+  to get right. Assert with a known pose at each boundary.
+- Rates (rev 3c): recorder and datasets **50 Hz**; GR00T chunk = **horizon 40**
+  (0.8 s); VLA replan **2.5 Hz** = `--replan-every 20` at `--rate 50`; SONIC
+  decoder native 50 Hz.
+- Token bounds `|t| <= 1.25` (FSQ grid) — clip the VLA output before the decoder.
+- Safety caps from `policy_convention.yaml`: 0.40 m / 0.60 rad per step;
+  `control_hz: 15` is the global *default*, overridden per run by `--rate`.
 - `evaluation.eval` refuses to resume a run folder with a different task/rate.
   One episode = one sample; always `--rollouts N`.
+- Motion pkls for SONIC: `root_trans_offset (T,3)`, `pose_aa (T,nb,3)`,
+  `dof (T,ndof)` in MuJoCo order, `root_rot (T,4)` **wxyz**, `smpl_joints
+  (T,24,3)` zeros allowed, fps 30, `_M` mirrors.
 
 ## Risks (ranked)
 
@@ -181,3 +280,7 @@ Never a training rank and an Isaac eval on the same device.
    validate with GR00T's loader before any training.
 7. wxyz/xyzw/rot6d mix-ups at three boundaries.
 8. Foreign memory on six of eight GPUs, no `nvidia-smi` — allocator rule (a).
+9. GMR needs SMPL-X body models (`SMPLX_*.pkl`, registration-walled) — if they
+   are not on the pod, the human-motion half of the library is not obtainable
+   autonomously; decide, record the decision, and continue with the demo clips
+   plus augmentations (P2 prompt says how).
