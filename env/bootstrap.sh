@@ -102,12 +102,14 @@ else
     || git clone --quiet "$FR3_URL_HTTPS" "$FR3_REPO"
   worklog "cloned franka-bimanual-isaac-sim -> $FR3_REPO"
 fi
+FR3_CHANGED=0  # step 5 re-installs the editable package only when this flips
 if [ "$(git -C "$FR3_REPO" rev-parse HEAD)" = "$FR3_COMMIT" ]; then
   skip "already at $FR3_COMMIT"
 else
   git -C "$FR3_REPO" checkout --quiet "$FR3_COMMIT"
   worklog "checked out franka-bimanual-isaac-sim @ $FR3_COMMIT (detached)"
   ok "checked out $FR3_COMMIT"
+  FR3_CHANGED=1
 fi
 git -C "$FR3_REPO" --no-pager log -1 --format='      HEAD %h %s'
 
@@ -145,24 +147,44 @@ else
       "typing-inspection==0.4.2"
   ok "eval-path leaves installed"
 
+  # "Already there" is a metadata check for the exact pinned version, not an
+  # import probe: the bare Kit interpreter has no numpy on its path (so
+  # `import h5py` fails there even when h5py is installed), pynput refuses to
+  # import without an X display, and avp-stream is --no-deps by design — an
+  # import test re-installed all of them on every re-run.
+  installed() {  # installed <dist> <version>
+    "$KIT_PY" -c 'import sys; from importlib.metadata import version; sys.exit(version(sys.argv[1]) != sys.argv[2])' \
+      "$1" "$2" >/dev/null 2>&1
+  }
+  importable() { ( cd "$HOME" && "$PYSH" -c "import $1" >/dev/null 2>&1 ); }
   for spec in "h5py==3.16.0" "scipy==1.15.3" "pyzmq==27.1.0" "pynput==1.8.2"; do
-    mod="${spec%%==*}"; [ "$mod" = "pyzmq" ] && mod=zmq
-    if "$KIT_PY" -c "import $mod" >/dev/null 2>&1; then
-      skip "$spec already importable"
+    if installed "${spec%%==*}" "${spec##*==}"; then
+      skip "$spec already installed"
     else
       "$KIT_PY" -m pip install --user --no-deps --disable-pip-version-check -q "$spec"
+      worklog "pip --user install $spec into $USERBASE_FR3"
       ok "$spec"
     fi
   done
   # Hardware teleop only (AVP); never on the eval path. Do not fail the run.
-  "$KIT_PY" -c "import avp_stream" >/dev/null 2>&1 \
-    || "$KIT_PY" -m pip install --user --no-deps --disable-pip-version-check -q "avp-stream==2.51" \
-    || warn "avp-stream not installed (teleop-only, not needed for the bake-off)"
+  if installed avp-stream 2.51; then
+    skip "avp-stream==2.51 already installed"
+  else
+    { "$KIT_PY" -m pip install --user --no-deps --disable-pip-version-check -q "avp-stream==2.51" \
+        && worklog "pip --user install avp-stream==2.51 into $USERBASE_FR3" && ok "avp-stream==2.51"; } \
+      || warn "avp-stream not installed (teleop-only, not needed for the bake-off)"
+  fi
 
-  "$KIT_PY" -m pip install --user --no-deps --no-build-isolation --disable-pip-version-check -q \
-      -e "$FR3_REPO"
-  worklog "pip --user install of the sim stack into $USERBASE_FR3 (editable $FR3_REPO)"
-  ok "franka-bimanual-isaac-sim installed editable"
+  # The editable install is re-done only when the pinned checkout moved (step 4)
+  # or the package does not import; otherwise a re-run is a no-op here too.
+  if [ "$FR3_CHANGED" = "0" ] && importable evaluation && importable tasks; then
+    skip "franka-bimanual-isaac-sim already installed editable"
+  else
+    "$KIT_PY" -m pip install --user --no-deps --no-build-isolation --disable-pip-version-check -q \
+        -e "$FR3_REPO"
+    worklog "pip --user install of the sim stack into $USERBASE_FR3 (editable $FR3_REPO)"
+    ok "franka-bimanual-isaac-sim installed editable"
+  fi
   unset PYTHONUSERBASE
 fi
 
@@ -209,17 +231,33 @@ fi
 #    Installed WITH deps on purpose (it is a normal python package with a real
 #    dependency set); if that resolution fights Kit's prebundle, the failure is
 #    reported here and gate P0 records it as a WARN rather than a stop.
+#
+#    Two pod facts shape the command (measured 2026-09-02):
+#    - pip runs through python.sh, NOT the bare Kit interpreter. Only python.sh
+#      (via setup_python_env.sh) puts the prebundled torch/scipy/transformers on
+#      sys.path, so pip sees them as satisfied and installs ~25 small wheels.
+#      Under the bare interpreter the same command downloads a second torch
+#      (~5 GB of CUDA wheels) into ~ — rule k, Lustre is 99 % full.
+#    - git cannot reach github.com over https from this pod (every repo, public
+#      or not, fails with "could not read Username"); ssh works. gear_sonic's
+#      pyproject pins smpl_sim as a git+https URL, so the https->ssh rewrite is
+#      scoped to this ONE pip call through GIT_CONFIG_COUNT — never a global
+#      git config, which would silently change every other clone on the pod.
 # ---------------------------------------------------------------------------
 step "9/10 gear_sonic into PYTHONUSERBASE=$USERBASE_SONIC"
 if [ "$ISAAC_OK" = "0" ]; then
   skip "/isaac-sim not accessible yet"
-elif PYTHONUSERBASE="$USERBASE_SONIC" "$KIT_PY" -c "import gear_sonic" >/dev/null 2>&1; then
+elif PYTHONUSERBASE="$USERBASE_SONIC" "$PYSH" -c "import gear_sonic" >/dev/null 2>&1; then
   skip "gear_sonic already importable in $USERBASE_SONIC"
 else
   mkdir -p "$USERBASE_SONIC"
-  if PYTHONUSERBASE="$USERBASE_SONIC" "$KIT_PY" -m pip install --user \
-        --disable-pip-version-check -e "$HOME/GR00T-WholeBodyControl/gear_sonic[training]"; then
-    worklog "pip --user install gear_sonic[training] into $USERBASE_SONIC"
+  if PYTHONUSERBASE="$USERBASE_SONIC" \
+     GIT_CONFIG_COUNT=1 \
+     GIT_CONFIG_KEY_0="url.git@github.com:.insteadOf" \
+     GIT_CONFIG_VALUE_0="https://github.com/" \
+     "$PYSH" -m pip install --user --disable-pip-version-check \
+        -e "$HOME/GR00T-WholeBodyControl/gear_sonic[training]"; then
+    worklog "pip --user install gear_sonic[training] into $USERBASE_SONIC (through python.sh so the prebundled torch is reused; git https->ssh rewrite scoped to this pip call)"
     ok "gear_sonic installed"
   else
     warn "gear_sonic[training] install FAILED (see the pip output above) — continuing; gate P0 reports this as WARN"
