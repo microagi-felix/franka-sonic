@@ -159,6 +159,11 @@ Then the demo set (P0 continued, gated by the replay check):
 - [ ] the LeRobot v3 -> GR00T v2 conversion may be done here or at the start of
       P1; **the p1 gate owns it** (`out/gr00t_v2/meta/modality.json`)
 
+`harness/gates/p0.sh` checks the **environment half only**. P0 passed its gate
+on 2026-09-02 23:45 with the demo half not yet run, so if no demo HDF5 exists
+under `~/runs/franka-sonic/` when P1 starts, **P1 collects it** (P1 prompt
+WP 1.0) — the p1 gate's dataset check is what enforces it.
+
 ### P1 — lane A: GR00T direct — GATE `harness/gates/p1.sh`
 
 - [ ] dataset: HDF5 -> LeRobot v3 -> GR00T v2 (`convert_v3_to_v2.py`) +
