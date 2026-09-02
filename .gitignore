@@ -1,0 +1,4 @@
+runs
+data
+*.log
+__pycache__/

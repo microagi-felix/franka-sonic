@@ -1,0 +1,38 @@
+# Repo pins for the FR3 handover bake-off.
+# Parsed by harness/bakeoff.py (stdlib-only mini-parser): keep the shape
+#   repos:
+#     <name>:
+#       key: value
+# two-space indentation, no lists, no quotes needed.
+
+repos:
+  franka-bimanual-isaac-sim:
+    url: git@github.com:MicroAGI-Labs/franka-bimanual-isaac-sim.git
+    ref: main
+    commit: 14f0d8a38cb0258f8ad955d2ecde55175ee4fd09
+    path: ~/code/franka-bimanual-isaac-sim
+    provided_by: env/bootstrap.sh step 4
+  Isaac-GR00T:
+    url: https://github.com/NVIDIA/Isaac-GR00T
+    ref: main
+    commit: ab88b50
+    path: ~/Isaac-GR00T
+    provided_by: already on the pod (has .venv, py3.10, torch 2.7.1+cu128)
+  GR00T-WholeBodyControl:
+    url: https://github.com/NVIDIA/GR00T-WholeBodyControl
+    ref: main
+    commit: 6d8e931
+    path: ~/GR00T-WholeBodyControl
+    provided_by: already on the pod (no venv; gear_sonic -> ~/env/pyuser-sonic)
+  GMR:
+    url: https://github.com/YanjieZe/GMR
+    ref: master
+    commit: bb1bbe4
+    path: ~/code/upstream/GMR
+    provided_by: clone in P2 (not needed before the motion library)
+  microagi-felix-brain:
+    url: git@github.com:microagi-felix/microagi-felix-brain.git
+    ref: main
+    commit: HEAD
+    path: ~/microagi-felix-brain
+    provided_by: already on the pod; env/bootstrap.sh step 10 fast-forwards it
