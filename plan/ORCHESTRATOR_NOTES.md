@@ -2,6 +2,20 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 2026-09-03 20:30 UTC — measure the token's precision floor (5 minutes, CPU) before betting on longer RL
+
+Longer RL only pays if the token still carries the target more precisely than the decoder tracks it.
+The model has the `g1_kin` reconstruction head (token → `command_multi_future_nonflat`, which
+includes the reference joint positions). Run it on the jp15 label tokens of episode 0 and 5 (the
+exported pair or the checkpoint in-process) and report: mean |reconstructed q − reference q| per
+joint (rad) and, by FK, the implied hand error (cm) at the grasp frames. Reading:
+- recon error ≪ decoder error (e.g. 0.3 cm vs 1 cm at the hand) ⇒ the FSQ token is not the floor,
+  precision training (fingertip points, tighter kernels, low noise, more hours) can still gain;
+- recon error ≈ decoder error ⇒ the 64-D × 32-level FSQ quantisation IS the floor and no amount of
+  RL will grasp a ~1 cm-margin cube blind — then the demos' grasp margin (regenerate with a fully
+  open, centred, slow pre-grasp) is the only real fix, to be decided by Felix tomorrow.
+Put the numbers in STATUS next to the tolerance-test result.
+
 ## 2026-09-03 20:15 UTC — add one cheap diagnostic: slow-motion B-oracle
 
 After the A-oracle tolerance test, run a **time-stretched B-oracle** on the best decoder (jp15 or
