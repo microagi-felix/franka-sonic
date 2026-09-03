@@ -55,17 +55,24 @@ def tracking_joint_space(
     std_tight: float = 0.15,
     w_wide: float = 0.5,
     w_tight: float = 0.5,
+    std_far: float = 1.5,
+    w_far: float = 0.0,
 ) -> torch.Tensor:
     """jp3: w_wide * mean_j exp(-dq_j^2/std_wide^2) + w_tight * mean_j exp(-dq_j^2/std_tight^2).
 
     Per-joint kernel MEAN (not the exp of the mean square): one wrapped joint must not zero
     the whole term. dq = q - q_ref in IsaacLab joint order, exactly as tracking_joint_pos_error.
+    jp6 adds an optional third, far scale (std_far, w_far; w_far=0 keeps jp3's behaviour) that
+    is still alive at 1-2 rad, where the 0.5/0.15 kernels are flat.
     """
     ref, q = _ref_and_robot(env, command_name, "pos")
     sq = torch.square(q - ref)
     wide = torch.exp(-sq / (std_wide**2)).mean(dim=-1)
     tight = torch.exp(-sq / (std_tight**2)).mean(dim=-1)
-    return w_wide * wide + w_tight * tight
+    out = w_wide * wide + w_tight * tight
+    if w_far:
+        out = out + w_far * torch.exp(-sq / (std_far**2)).mean(dim=-1)
+    return out
 
 
 def tracking_joint_vel(env, command_name: str, std: float = 2.0) -> torch.Tensor:

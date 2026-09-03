@@ -1,0 +1,39 @@
+# @package _global_
+# sonic_dual_fr3_jp3 "with the volume turned up", warm-started from jp3 (P5 "jp6").
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp6.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp6.yaml
+#
+# Why (P5, 15:45 UTC): a CPU sensitivity test on jp3's ckpt-1000 ONNX pair shows the token DOES
+# carry the wrist roll (a 1 rad shift of the j7 reference future moves ~40 of 64 token dims,
+# L2 ~1.0 vs ~3-5 for j1-j3) but the decoder's j4-j7 outputs do not react to it at all
+# (< 0.01 rad per rad of reference shift, vs 0.04-0.11 for j1-j3): the decoder was never
+# rewarded for using it. With action scale 0.25 and noise std 0.16 an exploration step moves
+# a joint by 0.04 rad; at 1-4 rad distance that changes jp3's reward by ~0 (kernels flat,
+# 1/14-diluted, 5-point offsets 2 mm) — no gradient, so the policy learns "ignore j7".
+# jp5 (early termination) did not learn either: 92 % of episodes ended by the joint rule within
+# ~60 steps and neither length nor reward trended up in 400 iterations. jp6 keeps jp3's
+# episode structure (no joint termination) and makes the joint-space signal loud enough to
+# register per exploration step, warm-started from jp3's model_step_002000.pt:
+#   1. tracking_joint_space weight 4.0 -> 10.0 (0.71 per joint), three scales: far std 1.5
+#      (alive at 1-2 rad) w 0.4, wide 0.5 w 0.3, tight 0.15 w 0.3
+#   2. linear joint-error penalty -4.0 * mean_j |dq_j| (slot upright_penalty): 0.29/rad/joint,
+#      never flat
+#   3. body-orientation kernels std 1.0 (as jp4/jp5)
+#   4. NO joint termination (foot_pos_xyz back to null); everything else = jp3
+defaults:
+  - sonic_dual_fr3_jp4
+  - _self_
+
+manager_env:
+  rewards:
+    feet_acc:
+      weight: 10.0
+      params:
+        std_far: 1.5
+        w_far: 0.4
+        w_wide: 0.3
+        w_tight: 0.3
+    upright_penalty:
+      weight: -4.0
+  terminations:
+    foot_pos_xyz: null
