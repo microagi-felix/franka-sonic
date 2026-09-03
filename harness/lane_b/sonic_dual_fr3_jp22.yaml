@@ -1,0 +1,22 @@
+# @package _global_
+# sonic_dual_fr3_jp20 + reset-velocity noise (P5 "jp22"), warm from jp20's newest checkpoint.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp22.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp22.yaml
+#
+# Why (B-oracle traces of jp20 ckpt 1000 in the handover env, 22:00 UTC): in the first ~0.5 s
+# of EVERY episode the decoder's targets are 9-11 cm / 0.2-0.7 rad off and the hand needs ~1.5 s
+# to settle; demos that grasp within 2 s (grip close at frame 73-98) miss, later grasps are fine.
+# The SONIC env resets ON the reference with the reference joint VELOCITY (~1 rad/s here); the
+# handover env starts the arm at the demo's frame-0 pose AT REST, a state the policy never saw.
+# jp22 adds uniform reset noise on the joint velocities (+-1.5 rad/s, covering "at rest") and a
+# little more on the positions (+-0.1 rad) so the policy learns to catch up from any start.
+# Everything else = jp20 (lane-A plant, jp18 rewards, encoder width 1391).
+defaults:
+  - sonic_dual_fr3_jp20
+  - _self_
+
+manager_env:
+  commands:
+    motion:
+      joint_position_range: [-0.1, 0.1]
+      joint_velocity_range: [-1.5, 1.5]
