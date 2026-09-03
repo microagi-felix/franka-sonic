@@ -631,6 +631,11 @@ def stage_finetune(run: Run) -> int:
     # No CUDA toolkit on the pod: DeepSpeed's import-time `nvcc -V` probe needs a CUDA_HOME.
     # harness/env/cuda_home_stub/bin/nvcc answers it; nothing gets compiled (adamw_torch, ZeRO-2).
     env["CUDA_HOME"] = str(REPO / "harness" / "env" / "cuda_home_stub")
+    # NCCL between two GPUs in this container faults with "illegal memory access" over both the
+    # P2P and the shared-memory transport (measured 2026-09-03 with a 2-rank all_reduce on 5,7);
+    # the socket transport works. Slower per step, but the only 2-rank path that runs here.
+    env.setdefault("NCCL_P2P_DISABLE", "1")
+    env.setdefault("NCCL_SHM_DISABLE", "1")
     rc = run.tee(cmd, cwd=Path(os.path.expanduser("~/Isaac-GR00T")), env=env)
     if rc != 0:
         return rc
