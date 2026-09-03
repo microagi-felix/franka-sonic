@@ -572,6 +572,7 @@ def stage_dataset(run: Run) -> int:
     cmd = [str(GR00T_PY), str(DATA / "convert_hdf5_to_gr00t_v2.py"),
            "--input", str(demos / "out" / "export" / "*.hdf5"), "--output", str(out),
            "--fps", str(RATE_HZ), "--task", "hand the block from the left arm to the right",
+           "--joint-label", "ik_target_clamped", "--validate-max-episodes", "5",
            "--modality-config-path", str(LANE_A / "modality_config_dual_fr3.py")]
     run.write_readme(
         what=(f"HDF5 -> GR00T v2 conversion of {demos} (harness/data/convert_hdf5_to_gr00t_v2.py, "
