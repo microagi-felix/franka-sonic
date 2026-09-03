@@ -2,6 +2,14 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 22:05 UTC — jp20 series is still rising: extend it past the 22:33 cap
+
+Ckpt 500 1/20 → ckpt 1000 7/20 → ckpt 1500 4/11 so far (progress 0.80). The curve has not flattened, so:
+1. When jp20 hits its 22:33 wall-clock cap, relaunch it immediately as a warm start from its last checkpoint (same jp20 recipe, same plant, `--hours 2.0`, one device) and keep the replay + ceiling-test loop every 500 iterations. Attempt 3 has budget until ~02:39 UTC; use it on this one variant only. No std-clamp or reward changes (jp21 showed the warm start breaks).
+2. Ceiling-test every 500 as long as the count rises; stop testing when two consecutive checkpoints do not improve, and take the best one as the P5 final.
+3. If a checkpoint reaches ≥ 15/20, write the gate marker, copy encoder+decoder ONNX + tokens dataset to `~/runs/franka-sonic/lane_b/final/p5/` and let the driver proceed to P6 (lane B redo: relabel with that encoder, refinetune GR00T, eval). P6 is only justified on a passing gate.
+4. The 20:05 wrap-up rule stands: STATUS line with the series table (ckpt → replay rad → grasp-frame L/R cm → B-oracle N/20 → mean progress) before the attempt ends.
+
 ## 21:40 UTC — ceiling #7 (jp20 ckpt 500) partial: the plant fix works, the residual is the RIGHT re-grasp
 
 Read at 21:38 from oracle_b-7's run log: 16 episodes in, 1 success (episode 12, done in 728 steps), 9 at progress 0.667, 5 at 0.167, 1 at 0. The 0.667 group = left grasp, lift and place succeed, the right arm's blind re-grasp misses, exactly the failure mode the tolerance test showed at +0.05 rad (right grasp tolerates 1–3 cm). So:
