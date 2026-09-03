@@ -74,3 +74,34 @@ def tracking_joint_vel(env, command_name: str, std: float = 2.0) -> torch.Tensor
     ref, qd = _ref_and_robot(env, command_name, "vel")
     err = torch.square(qd - ref).mean(dim=-1)
     return torch.exp(-err / (std**2))
+
+
+# --------------------------------------------------------------------------- P5 jp4 (hedge)
+# ckpt-1000 replay of jp3 (P5, 2026-09-03 15:15 UTC): the right arm tracks to <= 0.1 rad but the
+# left arm never follows its big excursions (wrist roll 0.73 -> -3.02 rad ignored, shoulder swing
+# to -1.75 rad ignored) and parks in another IK branch with the hand within 5 cm. In that state
+# every Gaussian kernel is flat (|dq| > 1 rad -> exp(-4) and below; body-ori error 0.85 rad at
+# std 0.4 -> 0.01), so PPO has no gradient out of it. jp4 adds the two DeepMimic-style levers:
+# a linear (never flat) joint-error penalty and an early termination on joint error, so the
+# wrong branch becomes a terminal state instead of a local optimum.
+
+
+def joint_pos_error_l1(env, command_name: str) -> torch.Tensor:
+    """jp4: mean_j |q_j - q_ref_j| (rad); mount with a NEGATIVE weight. Linear, so the gradient
+    is the same at 3 rad as at 0.1 rad — the Gaussian kernels are flat beyond ~1 rad."""
+    ref, q = _ref_and_robot(env, command_name, "pos")
+    return torch.abs(q - ref).mean(dim=-1)
+
+
+def bad_joint_pos(
+    env,
+    command_name: str,
+    max_joint_threshold: float = 1.5,
+    mean_threshold: float = 0.5,
+) -> torch.Tensor:
+    """jp4 termination: any joint further than `max_joint_threshold` rad from its reference, or
+    the 14-joint mean |dq| above `mean_threshold` rad. Same dq as the tracking terms. Returns a
+    bool tensor (num_envs,); time_out=False in the TerminationTermCfg (no bootstrap)."""
+    ref, q = _ref_and_robot(env, command_name, "pos")
+    err = torch.abs(q - ref)
+    return (err.max(dim=-1).values > max_joint_threshold) | (err.mean(dim=-1) > mean_threshold)

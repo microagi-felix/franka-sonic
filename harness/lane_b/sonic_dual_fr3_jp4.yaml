@@ -1,0 +1,48 @@
+# @package _global_
+# sonic_dual_fr3_jp3 + early termination on joint error (P5 hedge variant "jp4").
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp4.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp4.yaml
+#
+# P5 finding (ckpt-1000 replay of jp3, 15:15 UTC): the right arm tracks to <= 0.1 rad, the left
+# arm never follows its big excursions (wrist roll 0.73 -> -3.02 rad ignored, shoulder swing to
+# -1.75 rad ignored) and parks in another IK branch with the hand within 5 cm; jp3's in-env
+# error_joint_pos is only ~0.1 rad below jp2 at equal iterations (0.61 vs 0.73 at 1100). In the
+# wrong branch every Gaussian kernel is flat (|dq| > 1 rad -> exp(-4); body-ori error 0.85 rad
+# at std 0.4 -> 0.01): a local optimum PPO cannot leave. jp4 = jp3 plus, all in this file
+# (functions in harness/lane_b/sonic_rewards.py, PYTHONPATH=harness/lane_b):
+#   1. termination bad_joint_pos (slot foot_pos_xyz, nulled on the FR3): any joint > 1.5 rad or
+#      the 14-joint mean > 0.5 rad off the reference ends the episode (DeepMimic-style early
+#      termination; the adaptive motion sampler then over-samples the clips that fail)
+#   2. linear joint-error penalty -2.0 * mean_j |dq_j| (slot upright_penalty, unused): a
+#      gradient that does not vanish at 1-4 rad
+#   3. body-orientation kernels widened 0.4 -> 1.0 (both tracking_relative_body_ori terms) so the
+#      wrist-orientation reward is alive at the observed 0.85 rad error
+#   4. everything else = sonic_dual_fr3_jp3 (joint-space/joint-vel terms, 6 reward points, PD
+#      gains, action scale 0.25, PPO config)
+defaults:
+  - sonic_dual_fr3_jp3
+  - _self_
+
+manager_env:
+  rewards:
+    tracking_relative_body_ori:
+      params:
+        std: 1.0
+    tracking_relative_body_ori_weighted:
+      params:
+        std: 1.0
+    upright_penalty:
+      _target_: isaaclab.managers.RewardTermCfg
+      func: sonic_rewards:joint_pos_error_l1
+      weight: -2.0
+      params:
+        command_name: "motion"
+  terminations:
+    foot_pos_xyz:
+      _target_: isaaclab.managers.TerminationTermCfg
+      func: sonic_rewards:bad_joint_pos
+      time_out: false
+      params:
+        command_name: "motion"
+        max_joint_threshold: 1.5
+        mean_threshold: 0.5
