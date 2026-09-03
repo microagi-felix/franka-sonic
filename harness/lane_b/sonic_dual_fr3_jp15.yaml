@@ -1,0 +1,16 @@
+# @package _global_
+# sonic_dual_fr3_jp13 + a tight hand kernel only (P5 "jp15"; isolates jp14's position lever),
+# warm-started from jp13's last.pt. tracking_vr_5point_local std 0.10 -> 0.03 m, weight 2 -> 6;
+# joint kernels unchanged. Everything else = jp13.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp15.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp15.yaml
+defaults:
+  - sonic_dual_fr3_jp13
+  - _self_
+
+manager_env:
+  rewards:
+    tracking_vr_5point_local:
+      weight: 6.0
+      params:
+        std: 0.03

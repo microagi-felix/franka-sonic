@@ -1,0 +1,27 @@
+# @package _global_
+# sonic_dual_fr3_jp13 + centimetre precision (P5 "jp14"), warm-started from jp13's last.pt.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp14.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp14.yaml
+#
+# P5 finding (18:30 UTC): the jp11-jp13 decoders execute their own tokens to 0.05-0.09 rad and
+# follow the demo joints inside the handover env to 0.04-0.08 rad, but every B-oracle episode
+# scores 0/6: the grasp-phase video shows the gripper descending a few cm BESIDE the cube while
+# the A-oracle's fingers straddle it. The residual ~0.1 rad on the base joints (j1) is 3-5 cm at
+# the hand, and nothing in the reward asks for less: the 6-point hand kernel has std 0.10 m
+# (a 3 cm miss still scores 0.91) and the tight joint kernel std 0.15 rad (0.09 rad scores 0.70).
+# jp14 = jp13 with tracking_vr_5point_local std 0.10 -> 0.03 m and weight 2 -> 6, and the joint
+# kernels shifted one scale down (far 3.0 / wide 0.15 / tight 0.05 rad). Everything else = jp13.
+defaults:
+  - sonic_dual_fr3_jp13
+  - _self_
+
+manager_env:
+  rewards:
+    tracking_vr_5point_local:
+      weight: 6.0
+      params:
+        std: 0.03
+    feet_acc:
+      params:
+        std_wide: 0.15
+        std_tight: 0.05
