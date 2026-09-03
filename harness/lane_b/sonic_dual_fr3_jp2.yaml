@@ -1,0 +1,25 @@
+# @package _global_
+# sonic_dual_fr3 + a joint-space tracking reward with a WIDE kernel (std 1.0 rad).
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp2.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp2.yaml
+#
+# sonic_dual_fr3_jp (std 0.3 on the mean SQUARED joint error, plus tightened body kernels)
+# gave the joint term a value of ~0.02 at the initial 0.9 rad error — no gradient — and the
+# tighter body kernels slowed everything else down (run lane_b/2026-09-03_sonic_rl-4, stopped
+# at iteration ~900). This variant keeps every SONIC kernel at its default and only adds
+# tracking_joint_pos = exp(-mean (q - q_ref)^2 / 1.0^2), weight 2 (0.44 at 0.9 rad, ~1 near
+# zero), mounted on RewardsCfg's spare `tracking_relative_body_ori_weighted` slot
+# (harness/lane_b/sonic_rewards.py, PYTHONPATH=harness/lane_b).
+defaults:
+  - sonic_dual_fr3
+  - _self_
+
+manager_env:
+  rewards:
+    tracking_relative_body_ori_weighted:
+      _target_: isaaclab.managers.RewardTermCfg
+      func: sonic_rewards:tracking_joint_pos_error
+      weight: 2.0
+      params:
+        command_name: "motion"
+        std: 1.0
