@@ -1,0 +1,16 @@
+# @package _global_
+# sonic_dual_fr3_jp20 + low action noise (P5 "jp21"; orchestrator note 19:45 item 2c), warm from
+# jp20 model_step_001000.pt. The plant fix (jp20, lane-A plant with gravity off) opened the
+# ceiling (B-oracle 1/20, progress 0.50 at ckpt 500); what remains is the left arm's release
+# precision (1-2 cm + wrist roll) that the right arm's blind grasp needs within ~1-3 cm.
+# std_clamp_max 0.5 -> 0.1 (x0.25 = 0.025 rad target noise) so PPO fine-tunes the tracking with
+# less exploration noise. Everything else = jp20 (lane-A plant, jp18 rewards, encoder width 1391).
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp21.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp21.yaml
+defaults:
+  - sonic_dual_fr3_jp20
+  - _self_
+
+algo:
+  config:
+    std_clamp_max: 0.1

@@ -66,6 +66,7 @@ install_file "$HERE/sonic_dual_fr3_jp15.yaml" "$GS/config/exp/sonic_dual_fr3_jp1
 install_file "$HERE/sonic_dual_fr3_jp18.yaml" "$GS/config/exp/sonic_dual_fr3_jp18.yaml"
 install_file "$HERE/sonic_dual_fr3_jp19.yaml" "$GS/config/exp/sonic_dual_fr3_jp19.yaml"
 install_file "$HERE/sonic_dual_fr3_jp20.yaml" "$GS/config/exp/sonic_dual_fr3_jp20.yaml"
+install_file "$HERE/sonic_dual_fr3_jp21.yaml" "$GS/config/exp/sonic_dual_fr3_jp21.yaml"
 
 # 4. robot_mapping entry + order converter (minimal in-place patches, idempotent)
 python3 - "$GS" <<'PY'
