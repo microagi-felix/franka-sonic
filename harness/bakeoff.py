@@ -259,6 +259,7 @@ class Run:
                 sys.stdout.write(line)
                 sys.stdout.flush()
                 fh.write(line)
+                fh.flush()  # a 2 h fine-tune otherwise shows nothing until 8 KB accumulate
             rc = p.wait()
             fh.write(f"=== exit {rc}\n")
         return rc
