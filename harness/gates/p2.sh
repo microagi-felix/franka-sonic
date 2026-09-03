@@ -93,9 +93,13 @@ else
        "expected lane_b/*_motion_lib/out/motions/*.pkl (P2 WP 2.5)"
 fi
 
+# Several export/replay run folders can coexist (P2 validated the pipeline on an early
+# checkpoint before the final one): take the NEWEST artifact, not find(1)'s directory order.
+newest() { xargs -r ls -t 2>/dev/null | head -1; }
+
 # 5 -------------------------------------------------------------- ONNX pair
-enc=$(find_runs "$LANE_B_ALL" -maxdepth 4 -type f -name '*encoder*.onnx' | head -1)
-dec=$(find_runs "$LANE_B_ALL" -maxdepth 4 -type f -name '*decoder*.onnx' | head -1)
+enc=$(find_runs "$LANE_B_ALL" -maxdepth 4 -type f -name '*encoder*.onnx' | newest)
+dec=$(find_runs "$LANE_B_ALL" -maxdepth 4 -type f -name '*decoder*.onnx' | newest)
 if [ -n "$enc" ] && [ -n "$dec" ]; then
   pass "encoder + decoder ONNX" "$(basename "$enc") + $(basename "$dec") in $(dirname "$dec")"
 else
@@ -104,7 +108,7 @@ else
 fi
 
 # 6 -------------------------------------------------------------- decoder replay
-rep=$(find_runs "$LANE_B_ALL" -maxdepth 4 -type f -name 'replay*.json' | head -1)
+rep=$(find_runs "$LANE_B_ALL" -maxdepth 4 -type f -name 'replay*.json' | newest)
 if [ -n "$rep" ]; then
   err=$(python3 - "$rep" <<'PY' 2>/dev/null
 import json, sys
