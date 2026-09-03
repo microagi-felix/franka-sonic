@@ -636,7 +636,14 @@ def stage_dataset(run: Run) -> int:
     return 0
 
 
-def _finetune_cmd(dataset: Path, out: Path, num_gpus: int) -> list[str]:
+def _modality_config(lane: str) -> Path:
+    """Lane A: joint targets; lane B: SONIC token + grippers. Same file everywhere else (rev 3c)."""
+    if lane == "lane_b":
+        return REPO / "harness" / "lane_b" / "modality_config_dual_fr3_sonic.py"
+    return LANE_A / "modality_config_dual_fr3.py"
+
+
+def _finetune_cmd(dataset: Path, out: Path, num_gpus: int, lane: str = "lane_a") -> list[str]:
     launch = [str(GR00T_PY), "-m", "gr00t.experiment.launch_finetune"]
     if num_gpus > 1:
         launch = [str(Path(GR00T_PY).parent / "torchrun"), f"--nproc_per_node={num_gpus}",
@@ -645,7 +652,7 @@ def _finetune_cmd(dataset: Path, out: Path, num_gpus: int) -> list[str]:
         "--base-model-path", "nvidia/GR00T-N1.7-3B",
         "--dataset-path", str(dataset),
         "--embodiment-tag", "NEW_EMBODIMENT",
-        "--modality-config-path", str(LANE_A / "modality_config_dual_fr3.py"),
+        "--modality-config-path", str(_modality_config(lane)),
         "--num-gpus", str(num_gpus),
         "--max-steps", "2000", "--save-steps", "500", "--global-batch-size", "32",
         "--color-jitter-params", "brightness", "0.3", "contrast", "0.4", "saturation", "0.5", "hue", "0.08",
@@ -656,20 +663,33 @@ def _finetune_cmd(dataset: Path, out: Path, num_gpus: int) -> list[str]:
     ]
 
 
+def _dataset_dir(run: Run) -> Path:
+    """Lane A reads */*_dataset*/out/gr00t_v2; lane B reads lane_b/*_label_tokens*/out/gr00t_v2_sonic."""
+    if run.lane == "lane_b":
+        ds_run = Path(run.args.dataset).expanduser() if run.args.dataset else \
+            latest_run("lane_b", "label_tokens", "out/gr00t_v2_sonic/meta/modality.json")
+        sub = "gr00t_v2_sonic"
+    else:
+        ds_run = Path(run.args.dataset).expanduser() if run.args.dataset else _latest("*/*_dataset*")
+        sub = "gr00t_v2"
+    if ds_run is None or not (ds_run / "out" / sub / "meta" / "modality.json").exists():
+        sys.exit(f"[bakeoff] no {sub} dataset under {ds_run}")
+    return ds_run / "out" / sub
+
+
 def stage_finetune(run: Run) -> int:
-    """WP 1.3: GR00T N1.7 fine-tune as NEW_EMBODIMENT (rev 3c hyperparameters, identical for lane B)."""
-    ds_run = Path(run.args.dataset) if run.args.dataset else _latest("*/*_dataset*")
-    if ds_run is None or not (ds_run / "out" / "gr00t_v2" / "meta" / "modality.json").exists():
-        sys.exit(f"[bakeoff] no gr00t_v2 dataset under {ds_run}")
-    dataset = ds_run / "out" / "gr00t_v2"
+    """WP 1.3 / WP 3.3: GR00T N1.7 fine-tune as NEW_EMBODIMENT (rev 3c hyperparameters, identical
+    for both lanes — only --dataset-path and --modality-config-path differ)."""
+    dataset = _dataset_dir(run)
     out = run.dir / "out" / "checkpoints"
     n_gpus = len((run.devices or "").split(",")) if run.devices else 1
-    cmd = _finetune_cmd(dataset, out, n_gpus)
+    cmd = _finetune_cmd(dataset, out, n_gpus, run.lane)
+    wp = "P3 WP 3.3 — lane B's policy; gate p3" if run.lane == "lane_b" else "P1 WP 1.3 — lane A's policy; gate p1"
     run.write_readme(
         what=(f"gr00t.experiment.launch_finetune on {dataset} with {n_gpus} GPU(s): "
               "--max-steps 2000 --save-steps 500 --global-batch-size 32, SONIC-tutorial colour jitter, "
-              "4 dataloader workers, default LR/optimizer, no LoRA."),
-        why="P1 WP 1.3 — lane A's policy; gate p1 reads out/checkpoints/checkpoint-2000.",
+              f"4 dataloader workers, default LR/optimizer, no LoRA; modality config {_modality_config(run.lane)}."),
+        why=f"{wp} reads out/checkpoints/checkpoint-2000.",
     )
     run.write_cmd([f"cd {os.path.expanduser('~/Isaac-GR00T')}",
                    f"export CUDA_VISIBLE_DEVICES={run.devices or ''}",
@@ -755,8 +775,10 @@ def _eval_cmd(run: Run, eval_out: Path, client: str, extra: list[str]) -> list[s
 
 
 def stage_eval(run: Run) -> int:
-    """WP 1.5/1.6: serve_gr00t_joint.py (ZmqAct wire, chunk 40, replan 20) + evaluation.eval,
-    20 rollouts on the JointPos env. 2 GPUs: server on the first, Isaac on the second."""
+    """WP 1.5/1.6 (lane A) / WP 3.4 (lane B): policy server (ZmqAct wire, chunk 40, replan 20) +
+    evaluation.eval, 20 rollouts on the JointPos env. The sim side is byte-identical for both
+    lanes; lane B's server carries the SONIC decoder ONNX inside. 2 GPUs: server on the first,
+    Isaac on the second (or both on one)."""
     ckpt = _need(run, "checkpoint", "…/out/checkpoints/checkpoint-2000")
     devs = (run.devices or "").split(",")
     server_dev, sim_dev = (devs[0], devs[1]) if len(devs) > 1 else (devs[0], devs[0])
@@ -764,19 +786,30 @@ def stage_eval(run: Run) -> int:
     eval_out = run.dir / "out" / "eval"
     server_log = run.dir / "logs" / "server.log"
     pidfile = run.dir / "out" / "server.pid"
-    server_cmd = [str(GR00T_PY), str(LANE_A / "serve_gr00t_joint.py"), "--model-path", str(ckpt),
+    if run.lane == "lane_b":
+        exp = _export_run(run)
+        server_py = LANE_B / "serve_gr00t_sonic_joint.py"
+        extra = ["--decoder-onnx", str(exp / "out" / "model_decoder.onnx"),
+                 "--encoder-onnx", str(exp / "out" / "model_encoder.onnx")]
+        wp = "P3 WP 3.4 — lane B's success rate; gate p3 wants >= 20 episodes in out/eval/eval_results.csv."
+    else:
+        server_py = LANE_A / "serve_gr00t_joint.py"
+        extra = []
+        wp = "P1 WP 1.6 — lane A's success rate; gate p1 wants >= 20 episodes in out/eval/eval_results.csv."
+    server_cmd = [str(GR00T_PY), str(server_py), "--model-path", str(ckpt),
                   "--embodiment-tag", "NEW_EMBODIMENT",
-                  "--modality-config-path", str(LANE_A / "modality_config_dual_fr3.py"),
+                  "--modality-config-path", str(_modality_config(run.lane)),
                   "--host", "127.0.0.1", "--port", str(port), "--replan-every", "20",
-                  "--image-size", "640x360", "--device", "cuda"]
+                  "--image-size", "640x360", "--device", "cuda", *extra]
     eval_cmd = _eval_cmd(run, eval_out, "ZmqAct",
                          ["--endpoint", f"tcp://127.0.0.1:{port}", "--grip-threshold", "0.5"])
     run.write_readme(
-        what=(f"harness/lane_a/serve_gr00t_joint.py on {ckpt} (GPU {server_dev}, port {port}, 40-step "
-              f"joint chunk replanned every 20 steps) driven by evaluation.eval --client ZmqAct on the "
+        what=(f"{server_py.relative_to(REPO)} on {ckpt} (GPU {server_dev}, port {port}, 40-step "
+              f"chunk replanned every 20 steps{'; SONIC decoder ONNX inside the server at 50 Hz' if run.lane == 'lane_b' else ''}) "
+              f"driven by evaluation.eval --client ZmqAct on the "
               f"JointPos env (GPU {sim_dev}), {run.args.rollouts} rollouts at {RATE_HZ} Hz, "
               f"horizon {run.args.max_steps}."),
-        why="P1 WP 1.6 — lane A's success rate; gate p1 wants >= 20 episodes in out/eval/eval_results.csv.",
+        why=wp,
     )
     q = lambda c: " ".join(shlex.quote(x) for x in c)  # noqa: E731
     run.write_cmd([f"cd {FR3_REPO}", f"export PYTHONUSERBASE={USERBASE_FR3}", "",
@@ -1059,6 +1092,162 @@ def stage_decoder_replay(run: Run) -> int:
     return rc or 1
 
 
+# --------------------------------------------------------------------------- lane B (P3)
+def _export_run(run: Run) -> Path:
+    """The lane_b/*_export_onnx run folder holding model_encoder.onnx + model_decoder.onnx
+    (--onnx, else the newest one — the P2 gate's newest-wins rule)."""
+    p = Path(run.args.onnx).expanduser() if getattr(run.args, "onnx", None) else \
+        latest_run("lane_b", "export_onnx", "out/model_decoder.onnx")
+    if p is None or not (p / "out" / "model_encoder.onnx").exists() \
+            or not (p / "out" / "model_decoder.onnx").exists():
+        sys.exit(f"[bakeoff] no encoder/decoder ONNX pair under {p} (pass --onnx <lane_b/*_export_onnx run>)")
+    return p
+
+
+def _tokens_run(run: Run) -> Path:
+    p = Path(run.args.tokens).expanduser() if getattr(run.args, "tokens", None) else \
+        latest_run("lane_b", "label_tokens", "out/tokens/index.json")
+    if p is None or not (p / "out" / "tokens" / "index.json").exists():
+        sys.exit(f"[bakeoff] no token labels under {p} (pass --tokens <lane_b/*_label_tokens run>)")
+    return p
+
+
+def stage_label_tokens(run: Run) -> int:
+    """WP 3.1 + 3.2: offline SONIC token labels for the demos and the lane-B dataset variant.
+
+    Sub-steps (out/<step>.done; --steps selects, --resume continues):
+      validate  GPU   one demo clip through the trained policy in the SONIC env with
+                      harness/lane_b/dump_obs_callback.py -> out/validation/env_dump.npz
+      obs       CPU   label_tokens.py obs   (gear_sonic's own command term, offline)
+      encode    CPU   label_tokens.py encode (encoder ONNX -> out/tokens/episode_*.npz)
+      check     CPU   label_tokens.py check  (offline vs env, ONNX vs env policy, proprio layout)
+      dataset   CPU   make_sonic_dataset.py  (lane A frames + token action table -> out/gr00t_v2_sonic)
+    """
+    exp = _export_run(run)
+    enc_onnx, dec_onnx = exp / "out" / "model_encoder.onnx", exp / "out" / "model_decoder.onnx"
+    ckpt = None
+    if (exp / "out" / "export_summary.json").exists():
+        ckpt = json.loads((exp / "out" / "export_summary.json").read_text()).get("checkpoint")
+    if run.args.checkpoint:
+        ckpt = os.path.expanduser(run.args.checkpoint)
+    motions = Path(run.args.motions).expanduser() if run.args.motions else None
+    if motions is None:
+        ml = latest_run("lane_b", "motion_lib", "out/motions")
+        if ml is None:
+            sys.exit("[bakeoff] no motion library found; pass --motions")
+        motions = ml / "out" / "motions"
+    manifest = motions.parent / "manifest.json"
+    ds_run = Path(run.args.dataset).expanduser() if run.args.dataset else _latest("*/*_dataset*")
+    if ds_run is None or not (ds_run / "out" / "gr00t_v2" / "meta" / "provenance.json").exists():
+        sys.exit(f"[bakeoff] no lane A gr00t_v2 dataset (with provenance.json) under {ds_run}")
+    dataset_a = ds_run / "out" / "gr00t_v2"
+    out = run.dir / "out"
+    # the 76 ORIGINAL clips (no _M, no augmentation tag) in their own directory: the motion lib
+    # loads a whole directory
+    clips_dir = out / "clips_orig"
+    clips_dir.mkdir(exist_ok=True)
+    originals = sorted(p for p in motions.glob("*.pkl")
+                       if p.stem.count("_") == 2 and not p.stem.endswith("_M"))
+    for p in originals:
+        if not (clips_dir / p.name).exists():
+            shutil.copy2(p, clips_dir / p.name)
+    val_dir = out / "validation"
+    val_dir.mkdir(exist_ok=True)
+    val_clip_dir = val_dir / "clip"
+    val_clip_dir.mkdir(exist_ok=True)
+    clip = originals[0]
+    if not (val_clip_dir / clip.name).exists():
+        shutil.copy2(clip, val_clip_dir / clip.name)
+    dump_npz = val_dir / "env_dump.npz"
+
+    validate_cmd = [
+        str(PYSH), "gear_sonic/eval_agent_trl.py", f"checkpoint={ckpt}", "++headless=True",
+        "++num_envs=1", "++use_wandb=false", "++use_encoder=g1", "++run_once=True",
+        "++eval_callbacks=[dump]",
+        "++callbacks.dump._target_=dump_obs_callback.DumpObsCallback",
+        f"++callbacks.dump.out_npz={dump_npz}", f"++callbacks.dump.clip={clip.stem}",
+        f"++manager_env.commands.motion.motion_lib_cfg.motion_file={val_clip_dir}",
+        "++manager_env.commands.motion.start_from_first_frame=True",
+    ]
+    obs_cmd = [str(PYSH), str(LANE_B / "label_tokens.py"), "obs", "--clips", str(clips_dir),
+               "--out", str(out / "encoder_obs")]
+    encode_cmd = [str(GR00T_PY), str(LANE_B / "label_tokens.py"), "encode",
+                  "--obs", str(out / "encoder_obs"), "--encoder", str(enc_onnx),
+                  "--dataset", str(dataset_a), "--manifest", str(manifest), "--out", str(out / "tokens")]
+    check_cmd = [str(GR00T_PY), str(LANE_B / "label_tokens.py"), "check", "--dump", str(dump_npz),
+                 "--obs", str(out / "encoder_obs"), "--encoder", str(enc_onnx), "--decoder", str(dec_onnx),
+                 "--out", str(val_dir / "validation.json")]
+    dataset_cmd = [str(GR00T_PY), str(LANE_B / "make_sonic_dataset.py"), "--source", str(dataset_a),
+                   "--tokens", str(out / "tokens"), "--output", str(out / "gr00t_v2_sonic"),
+                   "--modality-config-path", str(_modality_config("lane_b"))]
+    run.write_readme(
+        what=(f"Token labels for the {len(originals)} original demo clips of {motions} with the encoder "
+              f"{enc_onnx} (checkpoint {ckpt}); validation replay of {clip.stem} in the SONIC env; "
+              f"lane-B dataset variant of {dataset_a} (same frames, action = [token 64 | grips 2])."),
+        why="P3 WP 3.1/3.2 — gate p3 reads out/gr00t_v2_sonic/meta/modality.json; the fine-tune reads the dataset.",
+    )
+    senv = sonic_env(run.devices)
+    run.write_cmd([f"cd {WBC_REPO}", f"export PYTHONUSERBASE={USERBASE_SONIC}",
+                   f"export PYTHONPATH={LANE_B}", f"export CUDA_VISIBLE_DEVICES={run.devices or ''}", "",
+                   "# validate (GPU)", _q(validate_cmd), "", "# obs (CPU, sonic env)", _q(obs_cmd), "",
+                   f"cd {REPO}", "# encode / check / dataset (CPU, GR00T venv)", _q(encode_cmd),
+                   _q(check_cmd), _q(dataset_cmd)])
+    steps = [
+        ("validate", validate_cmd, WBC_REPO, senv, dump_npz),
+        ("obs", obs_cmd, WBC_REPO, senv, out / "encoder_obs" / "obs_index.json"),
+        ("encode", encode_cmd, REPO, dict(os.environ), out / "tokens" / "index.json"),
+        ("check", check_cmd, REPO, dict(os.environ), val_dir / "validation.json"),
+        ("dataset", dataset_cmd, REPO, dict(os.environ), out / "gr00t_v2_sonic" / "meta" / "modality.json"),
+    ]
+    for name, cmd, cwd, env, marker in steps:
+        if not run.wants(name):
+            continue
+        if run.done(name):
+            print(f"[bakeoff] step {name} already done", flush=True)
+            continue
+        if name == "validate" and not ckpt:
+            print("[bakeoff] validate: no RL checkpoint known (pass --checkpoint); skipping", flush=True)
+            continue
+        rc = run.tee(cmd, cwd=cwd, env=env)
+        if not marker.exists():
+            print(f"[bakeoff] step {name} produced no {marker} (rc={rc})", file=sys.stderr)
+            return rc or 1
+        if name == "check" and rc != 0:
+            print("[bakeoff] check reported MISMATCH — see validation.json; not marking done", file=sys.stderr)
+            return rc
+        run.mark_done(name, f"rc={rc}")
+    return 0
+
+
+def stage_oracle_b(run: Run) -> int:
+    """WP 3.5: the encoder-labelled token stream of each recorded episode through the decoder
+    (no VLA), on the episode's recorded cube spawn, through evaluation.eval -> lane B's ceiling."""
+    exp = _export_run(run)
+    tok = _tokens_run(run)
+    demos = Path(run.args.demos) if run.args.demos else _latest("shared/*_demos*")
+    export_dir = demos / "out" / "export" if demos else None
+    if export_dir is None or not export_dir.is_dir():
+        sys.exit(f"[bakeoff] no export shards under {demos}")
+    eval_out = run.dir / "out" / "eval"
+    cmd = [str(PYSH), str(LANE_B / "eval_oracle_b.py"), "--demos", str(export_dir),
+           "--tokens", str(tok / "out" / "tokens"),
+           "--decoder-onnx", str(exp / "out" / "model_decoder.onnx"),
+           "--encoder-onnx", str(exp / "out" / "model_encoder.onnx"),
+           "--run-folder", str(eval_out), "--rate", str(RATE_HZ), "--replan-every", "20",
+           "--rollouts", str(run.args.rollouts), "--max-steps", str(run.args.max_steps),
+           "--no-splat", "--headless"]
+    run.write_readme(
+        what=(f"harness/lane_b/eval_oracle_b.py: episode k's offline token labels ({tok}) streamed through "
+              f"the SONIC decoder ONNX ({exp}) at {RATE_HZ} Hz, no VLA, on episode k's recorded cube spawn "
+              f"({export_dir}), through evaluation.eval on the JointPos env variant with a table-driven "
+              f"spawn; {run.args.rollouts} rollouts, horizon {run.args.max_steps}."),
+        why="P3 WP 3.5 — the B-oracle is lane B's ceiling: low means the controller lost, not the VLA.",
+    )
+    run.write_cmd([f"cd {FR3_REPO}", f"export PYTHONUSERBASE={USERBASE_FR3}",
+                   f"export CUDA_VISIBLE_DEVICES={run.devices or ''}", _q(cmd)])
+    return run.tee(cmd, cwd=FR3_REPO, env=sim_env({"CUDA_VISIBLE_DEVICES": run.devices or ""}))
+
+
 def stage_not_implemented(run: Run) -> int:
     print(
         f"[bakeoff] stage {run.lane}/{run.stage} is not implemented yet — "
@@ -1083,9 +1272,12 @@ REGISTRY = {
     ("lane_b", "sonic_rl"): (stage_sonic_rl, 1),
     ("lane_b", "export_onnx"): (stage_export_onnx, 1),
     ("lane_b", "decoder_replay"): (stage_decoder_replay, 1),
-    ("lane_b", "label_tokens"): (stage_not_implemented, 1),
-    ("lane_b", "finetune"): (stage_not_implemented, 2),
-    ("lane_b", "eval"): (stage_not_implemented, 1),
+    # P3 (2026-09-03): label_tokens needs a GPU only for its validation replay; finetune matches
+    # lane A (2 GPUs); eval = server + Isaac (1 GPU when the other is busy); oracle_b = Isaac.
+    ("lane_b", "label_tokens"): (stage_label_tokens, 1),
+    ("lane_b", "finetune"): (stage_finetune, 2),
+    ("lane_b", "eval"): (stage_eval, 1),
+    ("lane_b", "oracle_b"): (stage_oracle_b, 1),
 }
 
 
@@ -1187,6 +1379,10 @@ def main(argv=None) -> int:
                    help="checkpoint dir (…/checkpoints/checkpoint-2000) for eval stages")
     r.add_argument("--motions", default=None,
                    help="SONIC motion-library dir (lane_b/*_motion_lib/out/motions) for lane_b stages")
+    r.add_argument("--onnx", default=None,
+                   help="lane_b/*_export_onnx run folder (encoder+decoder ONNX); default newest")
+    r.add_argument("--tokens", default=None,
+                   help="lane_b/*_label_tokens run folder (out/tokens) for oracle_b; default newest")
     r.add_argument("--num-envs", type=int, default=2048, help="lane_b/sonic_rl: parallel envs")
     r.add_argument("--exp", default="sonic_dual_fr3",
                    help="lane_b/sonic_rl: gear_sonic experiment config (+exp=…)")
