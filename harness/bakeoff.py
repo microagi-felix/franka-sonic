@@ -925,6 +925,15 @@ def stage_sonic_rl(run: Run) -> int:
         "++callbacks.model_save.save_frequency=500",
         "use_wandb=false",
     ]
+    # P5 (2026-09-03): --checkpoint <model_step_*.pt|last.pt> warm-starts the policy from an
+    # earlier run (gear_sonic's resume_checkpoint: weights only, fresh optimizer, iteration 0)
+    # so a reward/termination variant does not pay the cold-start iterations again.
+    init_ckpt = Path(run.args.checkpoint).expanduser() if run.args.checkpoint else None
+    if init_ckpt is not None:
+        if not init_ckpt.exists():
+            print(f"[bakeoff] --checkpoint {init_ckpt} does not exist", file=sys.stderr)
+            return 1
+        cmd.append(f"checkpoint={init_ckpt}")
     run.write_readme(
         what=(f"SONIC PPO on the dual-FR3 embodiment: {_q(cmd)} — num_envs={num_envs}, "
               f"{iters} PPO iterations max, wall-clock cap {hours} h, motion library {motions}."),

@@ -1,0 +1,24 @@
+# @package _global_
+# sonic_dual_fr3_jp4 with relaxed joint-error termination, warm-started from jp3 (P5 "jp5").
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp5.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp5.yaml
+#
+# jp4 from a cold start (15:20-15:27 UTC, 150 iterations) never learned: an untrained policy
+# outputs ~0 -> PD target = the DEFAULT pose, so right after the reset onto the reference every
+# episode blew through mean |dq| > 0.5 rad within ~14 steps (foot_pos_xyz termination rate 1.0,
+# mean length 14, error flat at 0.465). jp5 keeps jp4's levers (early termination on joint error,
+# linear joint penalty -2.0, body-ori std 1.0, jp3's joint-space/joint-vel terms and 6 reward
+# points) but (1) starts from jp3's policy (bakeoff --checkpoint <jp3 model_step_*.pt>: weights
+# only, fresh optimizer) so episodes survive from iteration 0, and (2) relaxes the thresholds to
+# what the jp3 failure mode actually looks like: any joint > 2.0 rad off (the ignored 3.7 rad
+# wrist roll, the 1.4 rad shoulder swing later in the clip) or the 14-joint mean > 0.8 rad.
+defaults:
+  - sonic_dual_fr3_jp4
+  - _self_
+
+manager_env:
+  terminations:
+    foot_pos_xyz:
+      params:
+        max_joint_threshold: 2.0
+        mean_threshold: 0.8
