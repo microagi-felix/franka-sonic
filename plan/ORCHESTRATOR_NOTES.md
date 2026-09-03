@@ -2,6 +2,29 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 2026-09-03 16:30 UTC — jp6 is close; test the ceiling NOW, and attack the left wrist roll in parallel
+
+jp6 ckpt-1000 replays at 0.309 rad with the 13-joint mean at 0.105 rad and body error 1.8 cm — the
+only miss is the left wrist roll (0.73 → −3.02 rad). **Task success is the gate, not joint error**,
+and a parallel gripper grasps a cube just as well rolled by 180°, so the ceiling test may already
+pass. Six devices are free (0–4, 6). Do all of this concurrently, one device each:
+
+1. **Ceiling test now** on jp6 ckpt-1000: `label_tokens` (ALL steps, new encoder ⇒ new tokens + new
+   `gr00t_v2_sonic`) → `oracle_b --rollouts 20`. Repeat on every later checkpoint whose replay
+   error improves. If ≥ 15/20: gate, finals, PASS — do not wait for the training cap.
+2. Keep jp6 training and its replay loop.
+3. Launch, warm-started from jp6's newest `model_step`, `--num-envs 4096 --hours 2.0`:
+   - **jp7**: the linear joint penalty per joint instead of mean-diluted (−0.3 × Σ_j |dq_j|, i.e.
+     −0.3 rad⁻¹ per joint, ~4× the current per-joint gradient) + wrist joints (j5–j7, both arms)
+     weighted ×3 inside `tracking_joint_space` (per-joint weight vector, default ones).
+   - **jp8**: jp7 + ASYMMETRIC reward-point offsets — the current ±0.05 m x pair is symmetric under
+     a 180° roll, so the position kernel cannot see the roll at all; use one point at +0.05 m x and
+     one at +0.05 m y per hand (the encoder input width must stay 1391; else revert this item).
+   - **jp9**: jp7 + `std_clamp_max` 1.5 + `max_grad_norm` 1.0.
+   Replay each at 500/1000; ceiling-test any that beats jp6.
+4. Mind the CPU (384 cores, load ~30 from other tenants): if jp6's iteration time doubles, stop
+   the newest variant by its recorded pgid.
+
 ## 2026-09-03 16:10 UTC — all 8 GPUs are allocatable now; use them
 
 - `harness/gpus.py` threshold raised 1 → 40 GiB (pulled onto the pod). Devices 0–4 and 6 hold
