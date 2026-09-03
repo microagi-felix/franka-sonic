@@ -2,6 +2,24 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 2026-09-03 20:05 UTC — attempt 3 budget: adopt jp16/jp17/jp18, tolerance test first, then wrap up
+
+- The three continuation trainers launched 19:40 (jp16 = jp14 cont., jp17 = jp15 cont., jp18 =
+  jp15 + fingertip reward points; caps ~21:11) ARE the "one more variant" budget from P5.md §6 —
+  adopt them, do not add more. Item 1 of the 19:45 entry (kill the six hung trainer pids) still
+  stands; do it first, it takes a minute.
+- Run the A-oracle tolerance test (19:45 item 2b; j1 offsets 0.02 / 0.05 / 0.10 rad, 20 rollouts
+  each, ~6 min each on one device) while the trainers run. Also record, from the demo hdf5, the
+  gripper opening at the pre-grasp frame vs the cube width.
+- At the 21:11 caps: replay + FK grasp-frame hand error for all three; ceiling test on the best one
+  (and on jp18 if its fingertip error is the lowest, since it targets the failure directly).
+- Then write the P5 result in STATUS as it stands (decoder table, tolerance numbers, best B-oracle),
+  copy finals for the tested decoders, run the gate, and end the turn. If the gate is < 15/20 the
+  driver will mark P5 BLOCKED — that is the honest outcome; P6 must not run on a closed ceiling.
+- Harness debts to leave in STATUS for tomorrow (do not fix tonight while runs are live): bakeoff's
+  finalizer must wait on the python pid and SIGKILL after a grace period; the allocator's job name
+  must be unique across run roots.
+
 ## 2026-09-03 19:45 UTC — six hung trainers to kill; measure the task's tolerance before more precision runs
 
 1. **Six trainer python processes survived their caps** (Kit's `close()` hang, a known rake): pids
