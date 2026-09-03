@@ -33,7 +33,13 @@ import sys
 from pathlib import Path
 
 POOL = Path(os.path.expanduser("~/runs/franka-sonic/gpus.json"))
-IDLE_GIB = 1.0
+# A device is allocatable when it holds less than IDLE_GIB. Was 1.0 (only devices 5 and 7
+# qualified). Raised to 40 on 2026-09-03 16:10 UTC (orchestrator): devices 0-4 and 6 carry
+# 5-19 GiB from processes outside this pod that have been idle since 2026-09-01 (identical
+# numbers at every probe; bf16 matmul on each reaches ~380 TFLOPS = the same as an unloaded
+# device), and Felix's instruction is "use all 8 GPUs on the instance". Our jobs need
+# ~12 GiB (SONIC 4096 envs) to ~35 GiB (GR00T fine-tune rank); every device keeps > 75 GiB free.
+IDLE_GIB = 40.0
 GIB = 1024 ** 3
 
 

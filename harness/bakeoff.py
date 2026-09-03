@@ -1406,6 +1406,13 @@ def main(argv=None) -> int:
     q = sub.add_parser("root", help="print the run root a new run would use, free space and floor")
     q.set_defaults(fn=cmd_root)
     args = ap.parse_args(argv)
+    # Orchestrator -> phase-agent channel that cannot conflict with STATUS.md pushes:
+    # anything in plan/ORCHESTRATOR_NOTES.md is echoed on every bakeoff invocation.
+    notes = REPO / "plan" / "ORCHESTRATOR_NOTES.md"
+    if notes.is_file():
+        print("[bakeoff] ===== plan/ORCHESTRATOR_NOTES.md (read it; it may change your plan) =====", flush=True)
+        print(notes.read_text().rstrip(), flush=True)
+        print("[bakeoff] ===== end of orchestrator notes =====", flush=True)
     return args.fn(args)
 
 
