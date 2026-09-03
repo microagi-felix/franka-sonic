@@ -61,11 +61,16 @@ else
 fi
 
 # 4 -------------------------------------------------------------- table names both lanes
-if grep -E '^[[:space:]]*\|' "$REPORT" | grep -qiE 'lane[ _-]?a' && \
-   grep -E '^[[:space:]]*\|' "$REPORT" | grep -qiE 'lane[ _-]?b'; then
-  pass "table rows for both lanes"
+# Count-based on purpose: `grep ... | grep -q` exits at the first match, the
+# upstream grep then dies with SIGPIPE (141) and `set -o pipefail` turned that
+# into a FAIL on every valid report (2026-09-03, P4). Counting consumes the
+# whole stream, same semantics.
+ta=$(grep -E '^[[:space:]]*\|' "$REPORT" | grep -ciE 'lane[ _-]?a')
+tb=$(grep -E '^[[:space:]]*\|' "$REPORT" | grep -ciE 'lane[ _-]?b')
+if [ "${ta:-0}" -ge 1 ] && [ "${tb:-0}" -ge 1 ]; then
+  pass "table rows for both lanes" "lane A in $ta row(s), lane B in $tb row(s)"
 else
-  fail "table rows for both lanes" "no '|' row mentions lane A and none/one mentions lane B"
+  fail "table rows for both lanes" "'|' rows mentioning lane A: ${ta:-0}, lane B: ${tb:-0} — the table must carry both"
 fi
 
 # 5 -------------------------------------------------------------- oracles (WARN)
