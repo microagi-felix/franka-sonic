@@ -53,9 +53,9 @@ echo "GATE P1 — $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(hostname)"
 echo "----------------------------------------------------------------------"
 
 # 1 -------------------------------------------------------------- GR00T v2 dataset
-# The lane-A dataset is the one whose path does NOT mention sonic (that is P3's).
+# The lane-A dataset is the one NOT under lane_b/ and not named *_sonic*/*token* (that is P3's). Every path here contains "franka-sonic", so never filter on the bare word.
 ds=$(find_runs "$DATASET_ALL" -maxdepth 7 -type f -name modality.json \
-       -path '*/meta/*' | grep -vi sonic | head -1)
+       -path '*/meta/*' | grep -viE '/lane_b/|_sonic|token' | head -1)
 if [ -n "$ds" ]; then
   keys=$(grep -c '"' "$ds" 2>/dev/null)
   pass "GR00T v2 dataset modality.json" "$ds ($keys quoted lines)"

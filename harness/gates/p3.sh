@@ -49,9 +49,9 @@ echo "GATE P3 — $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(hostname)"
 echo "----------------------------------------------------------------------"
 
 # 1 -------------------------------------------------------------- token dataset
-# Lane B's dataset is the one whose path DOES mention sonic/token.
+# Lane B's dataset is under lane_b/ or named *_sonic*/*token* (every path contains "franka-sonic", so the bare word matches everything).
 ds=$(find_runs "$DATASET_ALL" -maxdepth 7 -type f -name modality.json \
-       -path '*/meta/*' | grep -iE 'sonic|token' | head -1)
+       -path '*/meta/*' | grep -iE '/lane_b/|_sonic|token' | head -1)
 if [ -n "$ds" ]; then
   pass "token dataset modality.json" "$ds"
   if grep -qiE 'token' "$ds"; then
