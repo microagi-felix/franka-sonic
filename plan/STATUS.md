@@ -137,3 +137,4 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
 - 2026-09-03 09:01  GATE P4: PASS — see plan/REPORT.md
     lane A (GR00T direct): 0/20 success, progress 0.042; lane B (GR00T over SONIC): 0/20, progress 0.025 — a tie at zero; pipeline proof, not a result
     A-oracle 20/20 vs B-oracle 0/20: the P2 token space + decoder is lane B's bottleneck (ceiling ~0); lane A's failure is the saturated first-chunk IK labels (P1 diagnosis). P4 is the last phase; nothing else started.
+- 2026-09-03 09:02  DRIVER: all phases passed
