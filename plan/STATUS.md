@@ -139,3 +139,4 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
     A-oracle 20/20 vs B-oracle 0/20: the P2 token space + decoder is lane B's bottleneck (ceiling ~0); lane A's failure is the saturated first-chunk IK labels (P1 diagnosis). P4 is the last phase; nothing else started.
 - 2026-09-03 09:02  DRIVER: all phases passed
 - 2026-09-03 10:20  ORCHESTRATOR: NEEDS-COPY resolved — /tmp/franka-sonic/lane_b/{2026-09-03_eval,2026-09-03_oracle_b,2026-09-03_label_tokens} copied (cp -r, nothing deleted) to ~/runs/franka-sonic/lane_b/final/ (~344 MB) so the P3/P4 evidence survives a pod restart; the 140 GB lane-B checkpoint tree stays on /tmp (model files already in final/2026-09-03_finetune).
+- 2026-09-03 14:34  DRIVER: start (pid 316030, effort xhigh, logs /home/felixminzenmay/runs/franka-sonic/driver/2026-09-03)
