@@ -2,6 +2,35 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 2026-09-03 19:45 UTC — six hung trainers to kill; measure the task's tolerance before more precision runs
+
+1. **Six trainer python processes survived their caps** (Kit's `close()` hang, a known rake): pids
+   341689 (jp6), 387915 (jp11), 425660 (jp12), 462198 (jp13), 519858 (jp14), 522702 (jp15) — all
+   reparented to init, ~115 % CPU each, ~12 GiB GPU each, no checkpoint written since their caps.
+   They are yours (recorded launcher pgids 341684/387910/425655/462193/519853/522697): `kill -9` the
+   six python pids now, confirm with `gpus.py list` + per-device memory, log it. Harness debt for
+   later: bakeoff's finalizer must wait on the python pid and SIGKILL after a grace period.
+2. **Ceiling #4/#5 (jp14/jp15) are 0/17 with ~65 % reaching milestone 1** — precision went from 1.5
+   to 1.0 cm at the grasp and it still closes on air. Before any further precision variant, measure
+   what the task actually tolerates (CPU + one short GPU job, ~15 min total):
+   a. From the demo hdf5: gripper opening at the pre-grasp frame vs the cube width, per episode — the
+      lateral margin per finger. If it is ≤ 1 cm, no 50 Hz PD tracker will reach it with our noise.
+   b. **A-oracle tolerance test**: replay the A-oracle (recorded joint targets) with a constant
+      offset added to the left arm's j1 targets of +0.02 / +0.04 rad (≈ 1 / 2 cm lateral at the
+      hand), 20 rollouts each (two `oracle_a` runs with a target-offset option in
+      `eval_oracle_a.py`, default 0, protocol otherwise unchanged). The offset at which the
+      A-oracle drops from 20/20 to ~0 IS the ceiling requirement. Put both numbers in STATUS.
+   c. Only if the requirement is within ~2× of jp14/jp15's grasp-frame error: one last variant,
+      warm from jp15 last, `--hours 1.0`: jp14's kernels + `std_clamp_max` 0.5 → 0.1 (less action
+      noise = tighter tracking), and confirm the ONNX export uses the MEAN action. Ceiling test at
+      its cap. Otherwise stop training.
+3. **If the ceiling is not ≥ 15/20 by 20:40 UTC** (attempt 2 ends 21:02): write the P5 result as it
+   stands — decoder solved (0.055 rad / 1 cm), ceiling closed by grasp precision vs the demos'
+   margin (numbers from 2a/2b), best B-oracle progress — copy finals for the best two decoders to
+   `~/runs/franka-sonic/lane_b/final/p5/`, and leave the marker to the gate. Attempt 3 (auto,
+   6 h) then reads P5.md §6 and continues ONLY with what 2b justifies; it must not re-run the
+   variant ladder.
+
 ## 2026-09-03 18:20 UTC — 0/20 at 0.089 rad ⇒ the plant differs; train on the deployment plant
 
 Two decoders under 0.1 rad and still 0/20 means the SONIC training env and lane A's JointPos env
