@@ -1,0 +1,23 @@
+# @package _global_
+# sonic_dual_fr3_jp6 aimed at the last miss, the left wrist roll (P5 "jp7"), warm-started from jp6.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp7.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp7.yaml
+#
+# jp6 ckpt 1000 replay (16:23 UTC): 0.309 rad mean, body 1.8 cm, all joints <= 0.31 rad except
+# L_j7 = 2.96 rad — the reference rolls the left wrist 0.73 -> -3.02 rad in 1.6 s and holds it;
+# the decoder's L_j7 target never goes below -0.11 (R_j7's +1.6 rad roll IS tracked). At 3 rad
+# distance jp6's far kernel (std 1.5) is dead again (exp(-4)) and only the linear term pulls
+# (0.29 rad^-1 per joint). jp7 = jp6 with the far kernel widened to std 3.0 (alive at 3 rad,
+# gradient ~0.25/rad) and the linear joint penalty doubled to -8.0 (0.57/rad per joint), from
+# jp6's model_step_001000.pt. Everything else = jp6.
+defaults:
+  - sonic_dual_fr3_jp6
+  - _self_
+
+manager_env:
+  rewards:
+    feet_acc:
+      params:
+        std_far: 3.0
+    upright_penalty:
+      weight: -8.0
