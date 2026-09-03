@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Stand-in for the CUDA toolkit's `nvcc -V`, for DeepSpeed's import-time probe ONLY.
+#
+# Pod franka-sonic has no CUDA toolkit (no /usr/local/cuda, no nvcc anywhere; the pip wheel
+# nvidia-cuda-nvcc-cu12 ships ptxas but no nvcc binary). GR00T's launch_finetune with
+# --num-gpus 2 goes through HF Trainer + DeepSpeed ZeRO-2, and `import deepspeed` calls
+# `installed_cuda_version()` (deepspeed/ops/op_builder/builder.py), which needs
+# torch.utils.cpp_extension.CUDA_HOME and parses "release <major>.<minor>" out of
+# `$CUDA_HOME/bin/nvcc -V`. Without it the import raises MissingCUDAException before
+# DS_SKIP_CUDA_CHECK is even consulted (2026-09-03, lane_a/2026-09-03_finetune attempt 1).
+#
+# Nothing is ever compiled: the recipe uses adamw_torch and ZeRO-2 without fused/CPU-offload
+# ops, so no DeepSpeed CUDA extension is built. The version printed matches the venv's torch
+# (2.7.1+cu128) so DeepSpeed's torch-vs-nvcc major check passes.
+#
+#   export CUDA_HOME=<repo>/harness/env/cuda_home_stub   (harness/bakeoff.py stage_finetune)
+if [ "$1" = "-V" ] || [ "$1" = "--version" ]; then
+  echo "nvcc: NVIDIA (R) Cuda compiler driver (franka-sonic stub: no toolkit on this pod)"
+  echo "Cuda compilation tools, release 12.8, V12.8.93"
+  echo "Build cuda_12.8.r12.8/compiler.stub"
+  exit 0
+fi
+echo "nvcc stub: this pod has no CUDA toolkit; only '-V' is supported (DeepSpeed import probe)" >&2
+exit 1

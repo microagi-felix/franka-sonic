@@ -628,6 +628,9 @@ def stage_finetune(run: Run) -> int:
     env = dict(os.environ)
     env["CUDA_VISIBLE_DEVICES"] = run.devices or ""
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
+    # No CUDA toolkit on the pod: DeepSpeed's import-time `nvcc -V` probe needs a CUDA_HOME.
+    # harness/env/cuda_home_stub/bin/nvcc answers it; nothing gets compiled (adamw_torch, ZeRO-2).
+    env["CUDA_HOME"] = str(REPO / "harness" / "env" / "cuda_home_stub")
     rc = run.tee(cmd, cwd=Path(os.path.expanduser("~/Isaac-GR00T")), env=env)
     if rc != 0:
         return rc
