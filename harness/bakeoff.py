@@ -906,17 +906,31 @@ def stage_sonic_rl(run: Run) -> int:
         f"# wall-clock cap {hours} h, then: kill $(cat {pidfile})",
     ])
     t0 = time.time()
+    # /isaac-sim/python.sh is a bash wrapper that does NOT exec python: a signal to p.pid
+    # alone would orphan the real trainer on the GPU. Own session -> kill the whole group.
     with log.open("w") as fh:
         p = subprocess.Popen(cmd, cwd=str(WBC_REPO), env=sonic_env(run.devices),
-                             stdout=fh, stderr=subprocess.STDOUT, text=True)
+                             stdout=fh, stderr=subprocess.STDOUT, text=True,
+                             start_new_session=True)
     pidfile.write_text(f"{p.pid}\n")
-    print(f"[bakeoff] trainer pid {p.pid}, log {log}", flush=True)
+    (run.dir / "out" / "train.pgid").write_text(f"{os.getpgid(p.pid)}\n")
+    print(f"[bakeoff] trainer wrapper pid {p.pid} (own process group), log {log}", flush=True)
     killed = False
     deadline = t0 + hours * 3600.0
     while p.poll() is None:
         if time.time() > deadline:
-            print("[bakeoff] wall-clock cap reached — stopping the trainer by its PID", flush=True)
-            stop_proc(p, run, "train")
+            print("[bakeoff] wall-clock cap reached — stopping the trainer's process group",
+                  flush=True)
+            pgid = os.getpgid(p.pid)
+            for sig, wait in ((signal.SIGTERM, 30), (signal.SIGKILL, 10)):
+                try:
+                    os.killpg(pgid, sig)
+                    p.wait(timeout=wait)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+                except ProcessLookupError:
+                    break
             killed = True
             break
         time.sleep(15)
