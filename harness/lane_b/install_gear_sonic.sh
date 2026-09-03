@@ -46,6 +46,7 @@ install_file "$HERE/robots_dual_fr3.py" "$GS/envs/manager_env/robots/dual_fr3.py
 
 # 3. experiment config (+exp=sonic_dual_fr3)
 install_file "$HERE/sonic_dual_fr3.yaml" "$GS/config/exp/sonic_dual_fr3.yaml"
+install_file "$HERE/sonic_dual_fr3_jp.yaml" "$GS/config/exp/sonic_dual_fr3_jp.yaml"
 
 # 4. robot_mapping entry + order converter (minimal in-place patches, idempotent)
 python3 - "$GS" <<'PY'

@@ -841,6 +841,9 @@ def sonic_env(devices: str | None) -> dict:
     env["CUDA_VISIBLE_DEVICES"] = devices or ""
     # gear_sonic's opt/wandb default is use_wandb=True + online; never publish from the pod.
     env["WANDB_MODE"] = "offline"
+    # harness/lane_b holds reward terms (sonic_rewards.py) and the replay callback that the
+    # experiment configs reference by module name; eval/export re-instantiate them too.
+    env["PYTHONPATH"] = f"{LANE_B}:{env.get('PYTHONPATH', '')}".rstrip(":")
     return env
 
 
@@ -879,8 +882,9 @@ def stage_sonic_rl(run: Run) -> int:
     iters = 3 if tiny else run.args.iters
     hours = 0.5 if tiny else run.args.hours
     base_dir = run.dir / "out"
+    exp = run.args.exp
     cmd = [
-        str(PYSH), "gear_sonic/train_agent_trl.py", "+exp=sonic_dual_fr3",
+        str(PYSH), "gear_sonic/train_agent_trl.py", f"+exp={exp}",
         f"num_envs={num_envs}", "headless=True", f"base_dir={base_dir}",
         f"exp_var={'smoke' if tiny else 'rl'}",
         f"++manager_env.commands.motion.motion_lib_cfg.motion_file={motions}",
@@ -1184,6 +1188,8 @@ def main(argv=None) -> int:
     r.add_argument("--motions", default=None,
                    help="SONIC motion-library dir (lane_b/*_motion_lib/out/motions) for lane_b stages")
     r.add_argument("--num-envs", type=int, default=2048, help="lane_b/sonic_rl: parallel envs")
+    r.add_argument("--exp", default="sonic_dual_fr3",
+                   help="lane_b/sonic_rl: gear_sonic experiment config (+exp=…)")
     r.add_argument("--iters", type=int, default=100000,
                    help="lane_b/sonic_rl: max PPO iterations (the --hours cap usually wins)")
     r.add_argument("--hours", type=float, default=1.5,
