@@ -1,0 +1,74 @@
+# @package _global_
+# sonic_dual_fr3 + the P5 "decoder that executes its own tokens" reward set (jp3).
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp3.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp3.yaml
+#
+# P3 finding: the jp2 decoder tracks hand positions to ~5 cm but not joints (0.66 rad replay
+# error, L_j7 2.72 wrapped, R_j6 1.18, L_j3 1.00, L_j1 0.96) and the B-oracle scores 0/20.
+# The reward could not see the wrist roll or the null space: the reward points sit ON the
+# joint-7 axis, link2/link4 origins on/near the joint-1/joint-3 axes, and jp2's joint term
+# (exp of the mean square, std 1.0) saturates on one wrapped joint. Changes, all in this file
+# (harness/lane_b/sonic_rewards.py holds the functions; PYTHONPATH=harness/lane_b):
+#   1. tracking_joint_space (slot feet_acc, nulled on the FR3): per-joint kernel mean at two
+#      scales, 0.5*mean_j exp(-dq^2/0.5^2) + 0.5*mean_j exp(-dq^2/0.15^2), weight 4.0
+#   2. tracking_joint_vel (slot undesired_contacts, nulled on the FR3):
+#      exp(-mean_j (qd-qd_ref)^2 / 2.0^2), weight 1.0
+#   3. tracking_relative_body_ori_weighted back on its upstream function, weight 1.0 over the
+#      two link7s (the unweighted tracking_relative_body_ori over all 7 bodies stays at 1.0
+#      as in P2 — it was never off; only the weighted slot had been borrowed by jp2)
+#   4. reward points off the joint-7 axis: per hand the flange plus two points offset
+#      +-0.05 m along the flange x axis (6 points; the tokenizer does not read them, so the
+#      encoder input width stays 1391 — verified at export, WP 5.2)
+#   5. everything else = sonic_dual_fr3 (PD gains, action scale 0.25, no self-collision,
+#      terminations, events, PPO config)
+defaults:
+  - sonic_dual_fr3
+  - _self_
+
+manager_env:
+  rewards:
+    tracking_relative_body_ori_weighted:
+      _target_: isaaclab.managers.RewardTermCfg
+      func: gear_sonic.envs.manager_env.mdp:tracking_relative_body_ori_weighted_error
+      weight: 1.0
+      params:
+        command_name: "motion"
+        std: 0.4
+        body_names: ["left_fr3_link7", "right_fr3_link7"]
+    feet_acc:
+      _target_: isaaclab.managers.RewardTermCfg
+      func: sonic_rewards:tracking_joint_space
+      weight: 4.0
+      params:
+        command_name: "motion"
+        std_wide: 0.5
+        std_tight: 0.15
+        w_wide: 0.5
+        w_tight: 0.5
+    undesired_contacts:
+      _target_: isaaclab.managers.RewardTermCfg
+      func: sonic_rewards:tracking_joint_vel
+      weight: 1.0
+      params:
+        command_name: "motion"
+        std: 2.0
+  commands:
+    motion:
+      reward_point_body:
+        [
+          "left_fr3_link7",
+          "right_fr3_link7",
+          "left_fr3_link7",
+          "left_fr3_link7",
+          "right_fr3_link7",
+          "right_fr3_link7",
+        ]
+      reward_point_body_offset:
+        [
+          [0.0, 0.0, 0.107],
+          [0.0, 0.0, 0.107],
+          [0.05, 0.0, 0.107],
+          [-0.05, 0.0, 0.107],
+          [0.05, 0.0, 0.107],
+          [-0.05, 0.0, 0.107],
+        ]
