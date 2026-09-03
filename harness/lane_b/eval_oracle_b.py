@@ -95,7 +95,21 @@ def register_oracle_client(decoder_onnx: str, hold_token: np.ndarray, clip_targe
             self._decoder = sonic_decoder.SonicDecoderRuntime(
                 decoder_onnx, hold_token=hold_token, clip_targets=clip_targets)
 
+        def _dump_trace(self) -> None:
+            # P5 diagnostic: per-step closed-loop trace (state seen, wire targets sent) per episode,
+            # written when ORACLE_B_TRACE_DIR is set; off by default (the P3 protocol is unchanged).
+            tdir = os.environ.get("ORACLE_B_TRACE_DIR")
+            if tdir and self._ep is not None and getattr(self, "_trace", None):
+                os.makedirs(tdir, exist_ok=True)
+                np.savez(os.path.join(tdir, f"trace_reset{self._resets - 1}.npz"),
+                         state16=np.asarray([t[0] for t in self._trace], np.float32),
+                         wire=np.asarray([t[1] for t in self._trace], np.float32),
+                         token_index=np.asarray([t[2] for t in self._trace], np.int32),
+                         name=self._ep["name"], clip=self._ep["clip"])
+            self._trace = []
+
         def reset(self) -> None:
+            self._dump_trace()
             idx = min(oracle_a_table.START_EPISODE + self._resets, len(oracle_a_table.EPISODES) - 1)
             self._resets += 1
             self._ep = oracle_a_table.EPISODES[idx]
@@ -111,6 +125,10 @@ def register_oracle_client(decoder_onnx: str, hold_token: np.ndarray, clip_targe
             state16 = np.asarray(obs["state16"], dtype=np.float32)
             raw = self._decoder.step(tokens[i], state16)
             wire = self._decoder.targets_wire(raw, grips[i])
+            if os.environ.get("ORACLE_B_TRACE_DIR"):
+                self._trace.append((state16.copy(), wire.copy(), i))
+                if len(self._trace) % 1500 == 0:
+                    self._dump_trace()  # the last episode gets no reset; flush at the horizon
             g_l = -1.0 if grips[i, 0] > 0.5 else 1.0  # JointPos env: +1 open, -1 closed
             g_r = -1.0 if grips[i, 1] > 0.5 else 1.0
             return np.concatenate([wire[0:7], [g_l], wire[8:15], [g_r]]).astype(np.float32)
