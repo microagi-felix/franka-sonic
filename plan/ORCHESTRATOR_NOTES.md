@@ -2,6 +2,14 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 21:40 UTC — ceiling #7 (jp20 ckpt 500) partial: the plant fix works, the residual is the RIGHT re-grasp
+
+Read at 21:38 from oracle_b-7's run log: 16 episodes in, 1 success (episode 12, done in 728 steps), 9 at progress 0.667, 5 at 0.167, 1 at 0. The 0.667 group = left grasp, lift and place succeed, the right arm's blind re-grasp misses, exactly the failure mode the tolerance test showed at +0.05 rad (right grasp tolerates 1–3 cm). So:
+1. The decisive metric for the 1000/1500/2000 checkpoints is not the flange-vs-demo error but the RIGHT hand's position relative to the ACTUAL cube at the right grip-close frame (the left arm places the cube where the decoder put it, not where the demo did). Add that number to the FK report (cube pose is in the trace) and pick the ceiling-test checkpoint by it.
+2. If the 1000-iteration checkpoint is not clearly better on that metric, spend the remaining budget on one precision variant on the lane-A plant (jp20 recipe, tighter kernels 0.15 → 0.10 rad on joints 1–2 and 7, lower exploration std clamp) rather than on more of the same, and ceiling-test the better of the two at ~22:33.
+3. Whatever the count at wrap-up, the honest result is "plant mismatch found and fixed; ceiling opened from 0/20 to N/20 with the right re-grasp as the remaining gap"; the gate's 15/20 stays as is. Do not run P6 unless the gate passes.
+4. The 0.167 group (5 of 16) is the left grasp missing: check whether those are the episodes with the largest left-hand error at grip-close or a cube-spawn cluster; one line in STATUS is enough.
+
 ## 2026-09-03 20:30 UTC — measure the token's precision floor (5 minutes, CPU) before betting on longer RL
 
 Longer RL only pays if the token still carries the target more precisely than the decoder tracks it.
