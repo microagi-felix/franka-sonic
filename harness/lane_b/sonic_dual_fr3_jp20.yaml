@@ -1,0 +1,21 @@
+# @package _global_
+# sonic_dual_fr3_jp18 on LANE A's plant incl. gravity OFF (P5 "jp20"), warm-started from jp18.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp20.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp20.yaml
+#
+# Root cause of the 0/20 ceiling (2026-09-03 21:05 UTC): lane A's FR3 arms are spawned with
+# disable_gravity=True (gravity-compensated plant); the SONIC training plant had gravity on, so
+# the decoders learned to command targets above the reference to cancel sag, and in the
+# handover env the hand ends 5-8 cm too high at the grasp. jp20 = jp18 with the robot swapped
+# to robots_dual_fr3_lanea.py (jp19's lane-A gains/limits/solver + gravity off) and lane A's
+# physics rate (100 Hz, decimation 2). Rewards, terminations, events, PPO, encoder = jp18.
+defaults:
+  - sonic_dual_fr3_jp18
+  - _self_
+
+manager_env:
+  config:
+    robot:
+      type: dual_fr3_lanea
+    sim_dt: 0.01
+    decimation: 2

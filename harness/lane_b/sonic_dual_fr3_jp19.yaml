@@ -1,0 +1,23 @@
+# @package _global_
+# sonic_dual_fr3_jp18 on the DEPLOYMENT plant (P5 "jp19"), warm-started from jp18.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp19.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp19.yaml
+#
+# Diagnosis (2026-09-03 ~21:00 UTC, B-oracle closed-loop traces vs the demo joints): the P5
+# decoders reproduce the demos to ~1 cm in the SONIC env but, in lane A's handover env, their
+# own targets put the left hand 5-8 cm too high at the grasp (the plant there lands ON the
+# targets; the SONIC plant settled 0.05-0.15 rad away from them and the policy learned that).
+# jp19 changes ONLY the plant, to lane A's handover JointPos env values (robots_dual_fr3_stiff.py:
+# 400/80 on all joints, armature 0, USD velocity limits, soft limit 1.0, solver 16/1) and the
+# physics rate (100 Hz, decimation 2 = lane A's; control stays 50 Hz). Rewards, terminations,
+# events, PPO config, encoder inputs = jp18 (width 1391 unchanged).
+defaults:
+  - sonic_dual_fr3_jp18
+  - _self_
+
+manager_env:
+  config:
+    robot:
+      type: dual_fr3_stiff
+    sim_dt: 0.01
+    decimation: 2

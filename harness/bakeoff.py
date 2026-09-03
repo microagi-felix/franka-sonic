@@ -934,7 +934,7 @@ def stage_sonic_rl(run: Run) -> int:
         f"algo.config.num_learning_iterations={iters}",
         "++callbacks.model_save.save_frequency=500",
         "use_wandb=false",
-    ]
+    ] + shlex.split(getattr(run.args, "sonic_overrides", "") or "")
     # P5 (2026-09-03): --checkpoint <model_step_*.pt|last.pt> warm-starts the policy from an
     # earlier run (gear_sonic's resume_checkpoint: weights only, fresh optimizer, iteration 0)
     # so a reward/termination variant does not pay the cold-start iterations again.
@@ -1024,7 +1024,8 @@ def stage_export_onnx(run: Run) -> int:
     # base_eval.yaml only knows `checkpoint`; every other key must be added with `++`
     # (eval_agent_trl merges the CLI config over the checkpoint's training config last).
     cmd = [str(PYSH), "gear_sonic/eval_agent_trl.py", f"checkpoint={ckpt}",
-           "++export_onnx_only=True", "++num_envs=1", "++headless=True", "++use_wandb=false"]
+           "++export_onnx_only=True", "++num_envs=1", "++headless=True", "++use_wandb=false"
+           ] + shlex.split(getattr(run.args, "sonic_overrides", "") or "")
     run.write_readme(
         what=f"ONNX export of the SONIC universal-token module from {ckpt}: {_q(cmd)}",
         why="P2 WP 2.7: gate p2 wants out/model_encoder.onnx + out/model_decoder.onnx; "
@@ -1089,7 +1090,7 @@ def stage_decoder_replay(run: Run) -> int:
         f"++callbacks.replay.out_json={out_json}", f"++callbacks.replay.clip={clip.stem}",
         f"++manager_env.commands.motion.motion_lib_cfg.motion_file={clip_dir}",
         "++manager_env.commands.motion.start_from_first_frame=True",
-    ]
+    ] + shlex.split(getattr(run.args, "sonic_overrides", "") or "")
     run.write_readme(
         what=f"Decoder replay of demo clip {clip.stem} through {ckpt} in the SONIC env: {_q(cmd)}",
         why="P2 WP 2.7: can the learned token space + decoder reproduce a handover demo? "
@@ -1413,6 +1414,9 @@ def main(argv=None) -> int:
     r.add_argument("--hours", type=float, default=1.5,
                    help="lane_b/sonic_rl: wall-clock cap; the trainer is stopped by PID after it")
     r.add_argument("--rollouts", type=int, default=20)
+    r.add_argument("--sonic-overrides", default="",
+                   help="lane_b sonic_rl/export_onnx/decoder_replay: extra Hydra overrides appended "
+                        "to the gear_sonic command, e.g. '++manager_env.config.robot.type=dual_fr3_stiff'")
     r.add_argument("--left-j1-offset-rad", type=float, default=0.0,
                    help="lane_b/oracle_a_tol: constant offset on the left joint-1 targets (P5 tolerance test)")
     r.add_argument("--max-steps", type=int, default=1500,

@@ -43,6 +43,8 @@ fi
 
 # 2. robot config
 install_file "$HERE/robots_dual_fr3.py" "$GS/envs/manager_env/robots/dual_fr3.py"
+install_file "$HERE/robots_dual_fr3_stiff.py" "$GS/envs/manager_env/robots/dual_fr3_stiff.py"  # P5 jp19: deployment plant
+install_file "$HERE/robots_dual_fr3_lanea.py" "$GS/envs/manager_env/robots/dual_fr3_lanea.py"  # P5 jp20: lane A plant, gravity off
 
 # 3. experiment config (+exp=sonic_dual_fr3)
 install_file "$HERE/sonic_dual_fr3.yaml" "$GS/config/exp/sonic_dual_fr3.yaml"
@@ -62,6 +64,8 @@ install_file "$HERE/sonic_dual_fr3_jp13.yaml" "$GS/config/exp/sonic_dual_fr3_jp1
 install_file "$HERE/sonic_dual_fr3_jp14.yaml" "$GS/config/exp/sonic_dual_fr3_jp14.yaml"
 install_file "$HERE/sonic_dual_fr3_jp15.yaml" "$GS/config/exp/sonic_dual_fr3_jp15.yaml"
 install_file "$HERE/sonic_dual_fr3_jp18.yaml" "$GS/config/exp/sonic_dual_fr3_jp18.yaml"
+install_file "$HERE/sonic_dual_fr3_jp19.yaml" "$GS/config/exp/sonic_dual_fr3_jp19.yaml"
+install_file "$HERE/sonic_dual_fr3_jp20.yaml" "$GS/config/exp/sonic_dual_fr3_jp20.yaml"
 
 # 4. robot_mapping entry + order converter (minimal in-place patches, idempotent)
 python3 - "$GS" <<'PY'
@@ -127,6 +131,47 @@ for c in changed:
     print("patched", c)
 open("/dev/stdout", "w").flush()
 PY
+
+# 4b. P5 jp19: robot_mapping entry for the deployment-plant variant (idempotent)
+python3 - "$GS" <<'PY2'
+import sys, pathlib
+gs = pathlib.Path(sys.argv[1])
+p = gs / "envs/manager_env/modular_tracking_env_cfg.py"
+s = p.read_text()
+if "dual_fr3_stiff" not in s:
+    s = s.replace(
+        "from gear_sonic.envs.manager_env.robots import dual_fr3, g1, h2",
+        "from gear_sonic.envs.manager_env.robots import dual_fr3, dual_fr3_stiff, g1, h2", 1)
+    entry = (
+        '            "dual_fr3_stiff": {\n'
+        '                "robot_cfg": dual_fr3_stiff.DUAL_FR3_STIFF_CFG,\n'
+        '                "action_scale": dual_fr3_stiff.DUAL_FR3_STIFF_ACTION_SCALE,\n'
+        '                "isaaclab_to_mujoco_mapping": dual_fr3_stiff.DUAL_FR3_STIFF_ISAACLAB_TO_MUJOCO_MAPPING,\n'
+        '            },\n'
+    )
+    anchor = '            "h2": {\n'
+    assert anchor in s, "robot_mapping anchor not found"
+    s = s.replace(anchor, entry + anchor, 1)
+    p.write_text(s)
+    print("patched", p, "(dual_fr3_stiff)")
+s = p.read_text()
+if "dual_fr3_lanea" not in s:
+    s = s.replace(
+        "from gear_sonic.envs.manager_env.robots import dual_fr3, dual_fr3_stiff, g1, h2",
+        "from gear_sonic.envs.manager_env.robots import dual_fr3, dual_fr3_lanea, dual_fr3_stiff, g1, h2", 1)
+    entry = (
+        '            "dual_fr3_lanea": {\n'
+        '                "robot_cfg": dual_fr3_lanea.DUAL_FR3_LANEA_CFG,\n'
+        '                "action_scale": dual_fr3_lanea.DUAL_FR3_LANEA_ACTION_SCALE,\n'
+        '                "isaaclab_to_mujoco_mapping": dual_fr3_lanea.DUAL_FR3_LANEA_ISAACLAB_TO_MUJOCO_MAPPING,\n'
+        '            },\n'
+    )
+    anchor = '            "h2": {\n'
+    assert anchor in s, "robot_mapping anchor not found"
+    s = s.replace(anchor, entry + anchor, 1)
+    p.write_text(s)
+    print("patched", p, "(dual_fr3_lanea)")
+PY2
 
 # 5. import check
 ( cd "$WBC" && PYTHONUSERBASE="$HOME/env/pyuser-sonic" /isaac-sim/python.sh -c \
