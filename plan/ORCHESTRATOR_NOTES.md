@@ -2,6 +2,29 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 2026-09-03 17:58 UTC — runtime is faithful (good); now train the start-pose gap away, keep the oracle env as is
+
+- The teacher-forced 0.227 rad settles it: the FR3-side path is right. Remaining gap = the closed loop
+  in lane A's env: (a) wrist-roll error at grasp time, (b) the FR3_READY start pose 0.3–0.7 rad off
+  the demos' frame 0, which the SONIC env's on-reference reset never trained.
+- **Do NOT change the oracle env's reset or controller** — lane A's eval and the P6 lane-B eval must
+  stay identical to P1/P3 (comparability protocol). Fix it on the decoder side:
+  - **jp14** (warm from the best jp12/jp13 checkpoint, `--hours 0.75`): jp13's rewards +
+    `manager_env.commands.motion.joint_position_range: [-0.6, 0.6]` (reset noise on every joint, so
+    the policy learns to converge onto the reference from off-reference starts like FR3_READY) and,
+    if the config has it, a wider reset-velocity range. Expect the in-env error to jump at first and
+    settle within a few hundred iterations.
+  - Runtime option that is legitimate for BOTH oracle and server: hold the frame-0 token for the
+    first ~0.5–1 s of an episode (the server does this already for its ready-pose hold token —
+    make the oracle do the same thing, nothing else).
+- Ceiling test #2 (jp11 ckpt 1000) is the read-out of (a)+(b) together; run #3 on jp12 ckpt 1000
+  (0.063 rad) as soon as a device is free, in parallel with #2's tail. If jp12 scores ≥ 10/20, the
+  wrist roll was the main term and jp14 is the polish; if it stays ~0, the start pose is the main
+  term and jp14 is the fix.
+- Harness debt (fix only when NO launcher is live, e.g. after the 18:32 cap): the allocator's job
+  name must include the run root or a unique id (17:48 incident). Until then check `gpus.py list`
+  by hand before every launch, as you already do.
+
 ## 2026-09-03 17:35 UTC — the 0/20 on jp7 is almost certainly the oracle path; find it before more variants
 
 A decoder at 0.226 rad / 1.6 cm in its own env scoring 0/20 with progress 0.008 (below P3's 0.033) means
