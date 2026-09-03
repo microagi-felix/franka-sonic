@@ -1,0 +1,18 @@
+# @package _global_
+# sonic_dual_fr3_jp6 + token reconstruction aux loss x100 (P5 "jp8"; orchestrator notes lever 1).
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp8.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp8.yaml
+# The g1_recon aux loss reconstructs the encoder input (10 future frames of joint pos + vel and
+# the anchor orientation) from the FSQ token; at coef 0.01 the token carries the wrist roll only
+# faintly (P5 sensitivity test: L2 ~1.0 for a 1 rad j7 shift vs 3-5 for j1-j3). Coef 1.0 forces
+# the token to encode the reference joints. Warm-started from jp6 model_step_001000.pt.
+defaults:
+  - sonic_dual_fr3_jp6
+  - _self_
+
+algo:
+  config:
+    actor:
+      backbone:
+        aux_loss_coef:
+          g1_recon: 1.0

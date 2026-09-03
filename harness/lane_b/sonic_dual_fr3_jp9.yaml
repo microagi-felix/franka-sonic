@@ -1,0 +1,16 @@
+# @package _global_
+# sonic_dual_fr3_jp6 + more exploration (P5 "jp9"; orchestrator notes lever 2).
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp9.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp9.yaml
+# With action scale 0.25 and the policy's noise std at ~0.16 an exploration step moves a joint
+# 0.04 rad — nothing against a 3 rad wrist roll. std_clamp_max 0.5 -> 1.5 (x0.25 = 0.37 rad
+# target noise if the policy grows its std) and max_grad_norm 0.1 -> 1.0 so larger updates pass.
+# Warm-started from jp6 model_step_001000.pt.
+defaults:
+  - sonic_dual_fr3_jp6
+  - _self_
+
+algo:
+  config:
+    std_clamp_max: 1.5
+    max_grad_norm: 1.0

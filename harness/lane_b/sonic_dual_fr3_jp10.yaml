@@ -1,0 +1,17 @@
+# @package _global_
+# sonic_dual_fr3_jp6 + recon aux x100 + more exploration (P5 "jp10" = jp8 + jp9 together;
+# orchestrator notes lever "jp8"). Warm-started from jp6 model_step_001000.pt.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp10.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp10.yaml
+defaults:
+  - sonic_dual_fr3_jp6
+  - _self_
+
+algo:
+  config:
+    std_clamp_max: 1.5
+    max_grad_norm: 1.0
+    actor:
+      backbone:
+        aux_loss_coef:
+          g1_recon: 1.0
