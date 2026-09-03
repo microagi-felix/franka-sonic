@@ -849,11 +849,21 @@ def stage_oracle_a(run: Run) -> int:
            "--run-folder", str(eval_out), "--rate", str(RATE_HZ), "--replan-every", "20",
            "--rollouts", str(run.args.rollouts), "--max-steps", str(run.args.max_steps),
            "--no-splat", "--headless"]
+    offset = float(getattr(run.args, "left_j1_offset_rad", 0.0) or 0.0)
+    tol = ""
+    if offset:
+        # P5 tolerance test (lane_b/oracle_a_tol): the same replay with the left joint-1 targets
+        # shifted by a constant; the offset at which the A-oracle stops succeeding is the grasp
+        # precision the task demands of lane B's decoder.
+        cmd += ["--left-j1-offset-rad", str(offset)]
+        tol = f" TOLERANCE TEST: left joint-1 targets offset by {offset:+.3f} rad on every row."
     run.write_readme(
         what=(f"harness/lane_a/eval_oracle_a.py over {export_dir}: episode k's recorded IK joint targets "
               f"+ binary gripper replayed on episode k's recorded cube spawn through evaluation.eval "
-              f"(JointPos env variant with a table-driven spawn), {run.args.rollouts} rollouts at {RATE_HZ} Hz."),
-        why="P1 WP 1.7 — the A-oracle calibrates lane A: ≈100 % by construction, else the dataset/replay path is wrong.",
+              f"(JointPos env variant with a table-driven spawn), {run.args.rollouts} rollouts at {RATE_HZ} Hz.{tol}"),
+        why=("P5 WP 5.3 — how much lateral hand error the handover grasp tolerates (orchestrator note 19:45 2b)."
+             if offset else
+             "P1 WP 1.7 — the A-oracle calibrates lane A: ≈100 % by construction, else the dataset/replay path is wrong."),
     )
     run.write_cmd([f"cd {FR3_REPO}", f"export PYTHONUSERBASE={USERBASE_FR3}",
                    f"export CUDA_VISIBLE_DEVICES={run.devices or ''}",
@@ -1287,6 +1297,9 @@ REGISTRY = {
     ("lane_b", "finetune"): (stage_finetune, 2),
     ("lane_b", "eval"): (stage_eval, 1),
     ("lane_b", "oracle_b"): (stage_oracle_b, 1),
+    # P5 diagnostic: the A-oracle with --left-j1-offset-rad, filed under lane_b so P1's readers
+    # (newest lane_a/*oracle_a*) never see a perturbed run.
+    ("lane_b", "oracle_a_tol"): (stage_oracle_a, 1),
 }
 
 
@@ -1400,6 +1413,8 @@ def main(argv=None) -> int:
     r.add_argument("--hours", type=float, default=1.5,
                    help="lane_b/sonic_rl: wall-clock cap; the trainer is stopped by PID after it")
     r.add_argument("--rollouts", type=int, default=20)
+    r.add_argument("--left-j1-offset-rad", type=float, default=0.0,
+                   help="lane_b/oracle_a_tol: constant offset on the left joint-1 targets (P5 tolerance test)")
     r.add_argument("--max-steps", type=int, default=1500,
                    help="evaluation.eval horizon at 50 Hz (30 s = the env's own episode length)")
     r.set_defaults(fn=cmd_run)

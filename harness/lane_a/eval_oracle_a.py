@@ -58,7 +58,10 @@ def arm_labels(g, side: str, joint_label: str, max_delta_rad: float) -> np.ndarr
 
 def load_episodes(spec: str, only_successful: bool = True,
                   joint_label: str = joint_labels.DEFAULT_JOINT_LABEL,
-                  max_delta_rad: float = joint_labels.DEFAULT_MAX_DELTA_RAD) -> list[dict]:
+                  max_delta_rad: float = joint_labels.DEFAULT_MAX_DELTA_RAD,
+                  left_j1_offset_rad: float = 0.0) -> list[dict]:
+    """left_j1_offset_rad (P5 tolerance test, default 0 = the P1 protocol): a constant added to
+    the LEFT arm's joint-1 target on every row, i.e. a lateral shift of the left hand."""
     import h5py
 
     if joint_label not in JOINT_LABELS:
@@ -90,6 +93,8 @@ def load_episodes(spec: str, only_successful: bool = True,
                 ).astype(np.float32)
                 action16[:, 7] = np.where(action16[:, 7] == 0, 1.0, action16[:, 7])
                 action16[:, 15] = np.where(action16[:, 15] == 0, 1.0, action16[:, 15])
+                if left_j1_offset_rad:
+                    action16[:, 0] += np.float32(left_j1_offset_rad)
                 episodes.append({
                     "name": f"{os.path.basename(path)}:{name}",
                     "action16": action16,
@@ -172,10 +177,17 @@ def main() -> int:
     ap.add_argument("--max-delta-rad", type=float, default=joint_labels.DEFAULT_MAX_DELTA_RAD)
     ap.add_argument("--start-episode", type=int, default=None,
                     help="table offset (default: the run folder's completed episode count)")
+    ap.add_argument("--left-j1-offset-rad", type=float, default=0.0,
+                    help="P5 tolerance test: constant offset added to the left arm's joint-1 target "
+                         "(default 0 = the P1 protocol, unchanged)")
     known, rest = ap.parse_known_args()
 
     oracle_a_table.EPISODES = load_episodes(known.demos, only_successful=not known.include_failed_replays,
-                                            joint_label=known.joint_label, max_delta_rad=known.max_delta_rad)
+                                            joint_label=known.joint_label, max_delta_rad=known.max_delta_rad,
+                                            left_j1_offset_rad=known.left_j1_offset_rad)
+    if known.left_j1_offset_rad:
+        print(f"[oracle-a] TOLERANCE TEST: left joint-1 targets offset by {known.left_j1_offset_rad:+.3f} rad",
+              flush=True)
     print(f"[oracle-a] arm label: {joint_labels.describe(known.joint_label, known.max_delta_rad)}", flush=True)
     oracle_a_table.START_EPISODE = (
         known.start_episode if known.start_episode is not None else completed_episodes(known.run_folder)
@@ -190,6 +202,7 @@ def main() -> int:
             "task": ORACLE_TASK_ID,
             "client": ORACLE_CLIENT,
             "joint_label": known.joint_label,
+            "left_j1_offset_rad": known.left_j1_offset_rad,
             "action_layout": f"[L fr3_joint1..7 ({known.joint_label}), L grip ±1, R fr3_joint1..7, R grip ±1]",
         }, fh, indent=2)
 
