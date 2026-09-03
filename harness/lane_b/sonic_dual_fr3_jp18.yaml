@@ -1,0 +1,28 @@
+# @package _global_
+# sonic_dual_fr3_jp15 with the hand reward points moved to fingertip depth (P5 "jp18"), from jp15.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp18.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp18.yaml
+#
+# P5 ceiling tests #3-#5 (jp13/jp14/jp15, 0/20 each): the gripper reaches the cube (milestone 1
+# in 5-11 of 20 episodes) but closes beside it. What the grasp needs is fingertip placement,
+# ~10 cm beyond the flange, where a wrist-roll residual of 0.2 rad already moves a fingertip by
+# 1-2 cm. jp18 keeps jp15's tight hand kernel (std 0.03 m, weight 6) but puts the two off-axis
+# reward points per hand at fingertip depth: flange (0, 0, 0.107) plus (+-0.04, 0, 0.21) in the
+# link7 frame (the Franka hand TCP sits 0.1034 m beyond the flange). body_names and the encoder
+# inputs are unchanged (the tokenizer does not read the reward points; width stays 1391).
+defaults:
+  - sonic_dual_fr3_jp15
+  - _self_
+
+manager_env:
+  commands:
+    motion:
+      reward_point_body_offset:
+        [
+          [0.0, 0.0, 0.107],
+          [0.0, 0.0, 0.107],
+          [0.04, 0.0, 0.21],
+          [-0.04, 0.0, 0.21],
+          [0.04, 0.0, 0.21],
+          [-0.04, 0.0, 0.21],
+        ]
