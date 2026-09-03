@@ -142,18 +142,66 @@ def run_root() -> tuple[Path, str | None]:
 class Run:
     def __init__(self, lane: str, stage: str, args: argparse.Namespace):
         self.lane, self.stage, self.args = lane, stage, args
-        day = _dt.date.today().isoformat()
-        root, self.fallback = run_root()
-        base = root / lane / f"{day}_{stage}"
-        d, n = base, 1
-        while d.exists():
-            n += 1
-            d = Path(f"{base}-{n}")
-        self.dir = d
-        (self.dir / "logs").mkdir(parents=True)
-        (self.dir / "out").mkdir()
+        resume = getattr(args, "resume", None)
+        if resume:
+            # Continue an existing run folder (rule o: a partial run is progress, not clutter).
+            self.dir = Path(os.path.expanduser(resume)).resolve()
+            if not (self.dir / "out").is_dir():
+                sys.exit(f"[bakeoff] --resume {self.dir} is not a run folder (no out/)")
+            self.fallback = None
+            if str(self.dir).startswith(str(RUNS_FALLBACK)):
+                self.fallback = "instance-local /tmp (NOT persistent across pod restarts)"
+        else:
+            day = _dt.date.today().isoformat()
+            root, self.fallback = run_root()
+            base = root / lane / f"{day}_{stage}"
+            d, n = base, 1
+            while d.exists():
+                n += 1
+                d = Path(f"{base}-{n}")
+            self.dir = d
+            (self.dir / "logs").mkdir(parents=True)
+            (self.dir / "out").mkdir()
         self.log = self.dir / "logs" / "run.log"
         self.devices: str | None = None
+        wanted = getattr(args, "steps", "all") or "all"
+        self.steps: set[str] | None = None if wanted == "all" else set(wanted.split(","))
+
+    # --- sub-step bookkeeping (a 6 h driver kill lands mid-stage; the next attempt resumes) ---
+    def wants(self, step: str) -> bool:
+        return self.steps is None or step in self.steps
+
+    def done(self, step: str) -> bool:
+        return (self.dir / "out" / f"{step}.done").exists()
+
+    def mark_done(self, step: str, note: str = "") -> None:
+        (self.dir / "out" / f"{step}.done").write_text(
+            f"{_dt.datetime.now().astimezone().isoformat(timespec='seconds')} {note}\n"
+        )
+
+    def log_tail_has(self, pattern: str, path: Path | None = None, max_bytes: int = 4_000_000):
+        """Regex-search the end of a log; scripts here exit 0 on failure (os._exit in a finally),
+        so the DONE marker in the log is the only truthful exit status."""
+        import re
+        p = path or self.log
+        if not p.exists():
+            return None
+        with p.open("rb") as fh:
+            fh.seek(max(0, p.stat().st_size - max_bytes))
+            text = fh.read().decode("utf-8", "replace")
+        return re.search(pattern, text)
+
+    def wait_pids(self, procs: dict, poll_s: float = 15.0) -> dict:
+        """Foreground, bounded-by-process-lifetime wait for Popen children we started."""
+        rcs = {}
+        while len(rcs) < len(procs):
+            for name, p in procs.items():
+                if name not in rcs and p.poll() is not None:
+                    rcs[name] = p.returncode
+                    print(f"[bakeoff] {name} pid {p.pid} exited rc={p.returncode}", flush=True)
+            if len(rcs) < len(procs):
+                time.sleep(poll_s)
+        return rcs
 
     def write_readme(self, what: str, why: str) -> None:
         (self.dir / "README.md").write_text(
@@ -342,6 +390,358 @@ def stage_p0_smoke(run: Run) -> int:
         stop_proc(server, run, "stub_server")
 
 
+RATE_HZ = 50  # rev 3c: recorder, datasets and eval all at 50 Hz (100 Hz physics, decimation 2)
+MIMIC_TASK = "Isaac-Stack-Cube-DualFranka-IK-Abs-Mimic-v0"
+ISAACLAB_ROOT = "/workspace/isaaclab"  # Isaac Lab 2.3.2 checkout the sim user-site was built from
+DATA = REPO / "harness" / "data"
+LANE_A = REPO / "harness" / "lane_a"
+
+
+def _demo_env(run: Run) -> dict:
+    return sim_env({
+        "CUDA_VISIBLE_DEVICES": run.devices or "",
+        "MIMIC_RATE_HZ": str(RATE_HZ),
+        "ISAACLAB_ROOT": ISAACLAB_ROOT,
+    })
+
+
+def stage_demos(run: Run) -> int:
+    """WP 1.0 (P0's demo half): scripted 50 Hz sources -> auto-annotate -> MimicGen x80 ->
+    video-backed export with the IK joint targets -> one-episode JointPos replay check.
+
+    Sub-steps (--steps): sources, annotate, generate, export, replay. Each leaves an
+    out/<step>.done marker so a killed run resumes with --resume <run>.
+    """
+    out = run.dir / "out"
+    sources, annotated = out / "sources.hdf5", out / "sources_annotated.hdf5"
+    generated, export_dir = out / "generated.hdf5", out / "export"
+    n_sources, n_generated, n_procs, n_shards = 10, 80, 4, 4
+    env = _demo_env(run)
+    run.write_readme(
+        what=(
+            f"The demo set both lanes train on: {n_sources} scripted source demos at {RATE_HZ} Hz "
+            f"(harness/data/scripted_source_demos.py, mirrored right-arm grasp for the angled rig), "
+            f"auto-annotated, MimicGen-expanded to {n_generated} episodes ({n_procs} single-env workers "
+            f"at {RATE_HZ} Hz via MIMIC_RATE_HZ), exported in {n_shards} shards as video-backed "
+            f"training-schema HDF5 with the differential-IK joint targets recorded per step, plus a "
+            f"one-episode replay through the JointPos env (out/replay_check)."
+        ),
+        why=(
+            "No demo HDF5 existed when P1 started (gate p0 covers the environment half only). "
+            "Rev 3c: one 50 Hz demo set, two action tables; lane A trains on absolute joint targets."
+        ),
+    )
+    src_cmd = [str(PYSH), str(DATA / "scripted_source_demos.py"), "--headless",
+               "--num_demos", str(n_sources), "--rate", str(RATE_HZ), "--dataset", str(sources)]
+    ann_cmd = [str(PYSH), str(DATA / "annotate_sources.py"), "--task", MIMIC_TASK,
+               "--input_file", str(sources), "--output_file", str(annotated), "--auto", "--headless"]
+    gen_cmd = [str(PYSH), str(DATA / "generate_parallel.py"), "--task", MIMIC_TASK,
+               "--input", str(annotated), "--output", str(generated),
+               "--total", str(n_generated), "--procs", str(n_procs)]
+    exp_cmds = {
+        f"export_shard{i}": [str(PYSH), str(DATA / "export_generated_50hz.py"),
+                             "--input", str(generated),
+                             "--output", str(export_dir / f"demos_shard{i}.hdf5"),
+                             "--rate", str(RATE_HZ), "--shard", str(i), "--num_shards", str(n_shards),
+                             "--headless"]
+        for i in range(n_shards)
+    }
+    replay_cmd = [str(PYSH), str(LANE_A / "eval_oracle_a.py"),
+                  "--demos", str(export_dir), "--run-folder", str(out / "replay_check"),
+                  "--rate", str(RATE_HZ), "--rollouts", "1", "--max-steps", str(run.args.max_steps),
+                  "--no-splat", "--headless"]
+    q = lambda c: " ".join(shlex.quote(x) for x in c)  # noqa: E731
+    run.write_cmd([
+        f"cd {FR3_REPO}", f"export PYTHONUSERBASE={USERBASE_FR3}",
+        f"export CUDA_VISIBLE_DEVICES={run.devices or ''}",
+        f"export MIMIC_RATE_HZ={RATE_HZ} ISAACLAB_ROOT={ISAACLAB_ROOT}", "",
+        "# 1. sources (Isaac recorder format, success-only)", q(src_cmd), "",
+        "# 2. auto-annotate subtask signals", q(ann_cmd), "",
+        "# 3. MimicGen, process-level parallel", q(gen_cmd), "",
+        "# 4. export (video-backed, half-res frames, IK joint targets) in parallel shards",
+        *[q(c) + f" > {run.dir / 'logs' / (n + '.log')} 2>&1 &" for n, c in exp_cmds.items()],
+        "wait", "",
+        "# 5. replay check: one generated episode through the JointPos env", q(replay_cmd),
+    ])
+
+    if run.wants("sources") and not run.done("sources"):
+        run.tee(src_cmd, cwd=FR3_REPO, env=env)
+        m = run.log_tail_has(r"EXPERT_DONE: (\d+)/(\d+) source demos")
+        if not m or int(m.group(1)) == 0:
+            print("[bakeoff] sources: no EXPERT_DONE with saved > 0 in the log", file=sys.stderr)
+            return 1
+        run.mark_done("sources", f"{m.group(1)}/{m.group(2)} saved")
+        print(f"[bakeoff] sources: {m.group(1)}/{m.group(2)} saved -> {sources}", flush=True)
+
+    if run.wants("annotate") and not run.done("annotate"):
+        run.tee(ann_cmd, cwd=FR3_REPO, env=env)
+        if not annotated.exists():
+            print(f"[bakeoff] annotate: {annotated} was not written", file=sys.stderr)
+            return 1
+        run.mark_done("annotate")
+
+    if run.wants("generate") and not run.done("generate"):
+        run.tee(gen_cmd, cwd=FR3_REPO, env=env)
+        m = run.log_tail_has(r"PARALLEL_GEN_DONE: (\d+) episodes merged .*aggregate (\d+)/(\d+) = ([\d.]+)% success")
+        if not m or int(m.group(1)) == 0:
+            print("[bakeoff] generate: no PARALLEL_GEN_DONE with episodes > 0", file=sys.stderr)
+            return 1
+        keep = {"episodes": int(m.group(1)), "successes": int(m.group(2)),
+                "trials": int(m.group(3)), "keep_rate_pct": float(m.group(4))}
+        (out / "keep_rate.json").write_text(json.dumps(keep, indent=2) + "\n")
+        run.mark_done("generate", json.dumps(keep))
+        print(f"[bakeoff] generate: {keep}", flush=True)
+
+    if run.wants("export") and not run.done("export"):
+        export_dir.mkdir(exist_ok=True)
+        procs = {}
+        for name, cmd in exp_cmds.items():
+            log = run.dir / "logs" / f"{name}.log"
+            with log.open("w") as fh:
+                procs[name] = subprocess.Popen(cmd, cwd=str(FR3_REPO), env=env,
+                                               stdout=fh, stderr=subprocess.STDOUT, text=True)
+            (out / f"{name}.pid").write_text(f"{procs[name].pid}\n")
+            print(f"[bakeoff] {name} pid {procs[name].pid} -> {log}", flush=True)
+        run.wait_pids(procs)
+        total = 0
+        for name in exp_cmds:
+            m = run.log_tail_has(r"EXPORT_DONE: (\d+) episodes", run.dir / "logs" / f"{name}.log")
+            if not m:
+                print(f"[bakeoff] {name}: no EXPORT_DONE in its log", file=sys.stderr)
+                return 1
+            total += int(m.group(1))
+        run.mark_done("export", f"{total} episodes in {n_shards} shards")
+        print(f"[bakeoff] export: {total} episodes -> {export_dir}", flush=True)
+
+    if run.wants("replay") and not run.done("replay"):
+        rc = run.tee(replay_cmd, cwd=FR3_REPO, env=env)
+        csv = out / "replay_check" / "eval_results.csv"
+        ok = csv.exists() and any(",True," in line for line in csv.read_text().splitlines())
+        if rc != 0 or not ok:
+            print(f"[bakeoff] replay check failed (rc={rc}, success row={ok}) — see {csv}",
+                  file=sys.stderr)
+            return 1
+        run.mark_done("replay", "handover_success=True on the JointPos env")
+    return 0
+
+
+def _need(run: Run, attr: str, hint: str) -> Path:
+    v = getattr(run.args, attr, None)
+    if not v:
+        sys.exit(f"[bakeoff] --{attr} is required for {run.lane}/{run.stage} ({hint})")
+    p = Path(os.path.expanduser(v)).resolve()
+    if not p.exists():
+        sys.exit(f"[bakeoff] --{attr} {p} does not exist")
+    return p
+
+
+def _latest(pattern: str) -> Path | None:
+    hits = sorted(RUNS.glob(pattern)) + sorted(RUNS_FALLBACK.glob(pattern))
+    return hits[-1] if hits else None
+
+
+def stage_dataset(run: Run) -> int:
+    """WP 1.1: export HDF5 shards -> GR00T v2 (LeRobot v2.1 layout) + stats + loader validation.
+    CPU only (no GPU claim). Reads --demos (default: newest shared/*_demos*)."""
+    demos = Path(run.args.demos) if run.args.demos else _latest("shared/*_demos*")
+    demos = _need(run, "demos", "the shared/*_demos run folder") if run.args.demos else demos
+    if demos is None or not (demos / "out" / "export").is_dir():
+        sys.exit(f"[bakeoff] no export shards under {demos}/out/export")
+    out = run.dir / "out" / "gr00t_v2"
+    cmd = [str(GR00T_PY), str(DATA / "convert_hdf5_to_gr00t_v2.py"),
+           "--input", str(demos / "out" / "export" / "*.hdf5"), "--output", str(out),
+           "--fps", str(RATE_HZ), "--task", "hand the block from the left arm to the right",
+           "--modality-config-path", str(LANE_A / "modality_config_dual_fr3.py")]
+    run.write_readme(
+        what=(f"HDF5 -> GR00T v2 conversion of {demos} (harness/data/convert_hdf5_to_gr00t_v2.py, "
+              f"written here because lerobot is not on the pod and NVIDIA's convert_v3_to_v2.py needs "
+              f"it), then gr00t/data/stats.py and a LeRobotEpisodeLoader validation."),
+        why="P1 WP 1.1 — the dataset both the fine-tune and the open-loop eval read; gate p1 check 1.",
+    )
+    run.write_cmd([f"cd {REPO}", " ".join(shlex.quote(c) for c in cmd)])
+    rc = run.tee(cmd, cwd=REPO, env=dict(os.environ))
+    if rc != 0 or not (out / "meta" / "modality.json").exists():
+        return rc or 1
+    return 0
+
+
+def _finetune_cmd(dataset: Path, out: Path, num_gpus: int) -> list[str]:
+    launch = [str(GR00T_PY), "-m", "gr00t.experiment.launch_finetune"]
+    if num_gpus > 1:
+        launch = [str(Path(GR00T_PY).parent / "torchrun"), f"--nproc_per_node={num_gpus}",
+                  "--master_port=29517", "-m", "gr00t.experiment.launch_finetune"]
+    return launch + [
+        "--base-model-path", "nvidia/GR00T-N1.7-3B",
+        "--dataset-path", str(dataset),
+        "--embodiment-tag", "NEW_EMBODIMENT",
+        "--modality-config-path", str(LANE_A / "modality_config_dual_fr3.py"),
+        "--num-gpus", str(num_gpus),
+        "--max-steps", "2000", "--save-steps", "500", "--global-batch-size", "32",
+        "--color-jitter-params", "brightness", "0.3", "contrast", "0.4", "saturation", "0.5", "hue", "0.08",
+        "--dataloader-num-workers", "4",
+        "--save-total-limit", "5",
+        "--no-use-wandb",
+        "--output-dir", str(out),
+    ]
+
+
+def stage_finetune(run: Run) -> int:
+    """WP 1.3: GR00T N1.7 fine-tune as NEW_EMBODIMENT (rev 3c hyperparameters, identical for lane B)."""
+    ds_run = Path(run.args.dataset) if run.args.dataset else _latest("*/*_dataset*")
+    if ds_run is None or not (ds_run / "out" / "gr00t_v2" / "meta" / "modality.json").exists():
+        sys.exit(f"[bakeoff] no gr00t_v2 dataset under {ds_run}")
+    dataset = ds_run / "out" / "gr00t_v2"
+    out = run.dir / "out" / "checkpoints"
+    n_gpus = len((run.devices or "").split(",")) if run.devices else 1
+    cmd = _finetune_cmd(dataset, out, n_gpus)
+    run.write_readme(
+        what=(f"gr00t.experiment.launch_finetune on {dataset} with {n_gpus} GPU(s): "
+              "--max-steps 2000 --save-steps 500 --global-batch-size 32, SONIC-tutorial colour jitter, "
+              "4 dataloader workers, default LR/optimizer, no LoRA."),
+        why="P1 WP 1.3 — lane A's policy; gate p1 reads out/checkpoints/checkpoint-2000.",
+    )
+    run.write_cmd([f"cd {os.path.expanduser('~/Isaac-GR00T')}",
+                   f"export CUDA_VISIBLE_DEVICES={run.devices or ''}",
+                   " ".join(shlex.quote(c) for c in cmd)])
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = run.devices or ""
+    env.setdefault("TOKENIZERS_PARALLELISM", "false")
+    rc = run.tee(cmd, cwd=Path(os.path.expanduser("~/Isaac-GR00T")), env=env)
+    if rc != 0:
+        return rc
+    if not (out / "checkpoint-2000").is_dir():
+        print(f"[bakeoff] finetune exited 0 but {out}/checkpoint-2000 is missing", file=sys.stderr)
+        return 1
+    return 0
+
+
+def stage_open_loop(run: Run) -> int:
+    """WP 1.4: open_loop_eval.py on checkpoints 500/1000/1500/2000 -> MSE trend."""
+    ds_run = Path(run.args.dataset) if run.args.dataset else _latest("*/*_dataset*")
+    dataset = ds_run / "out" / "gr00t_v2"
+    ckpt_root = Path(run.args.checkpoint).resolve() if run.args.checkpoint else None
+    if ckpt_root is None:
+        ft = _latest("lane_a/*_finetune*")
+        ckpt_root = ft / "out" / "checkpoints" if ft else None
+    if ckpt_root is None or not ckpt_root.is_dir():
+        sys.exit("[bakeoff] --checkpoint <…/out/checkpoints> is required")
+    if ckpt_root.name.startswith("checkpoint-"):
+        ckpt_root = ckpt_root.parent
+    steps = [500, 1000, 1500, 2000]
+    run.write_readme(
+        what=f"gr00t/eval/open_loop_eval.py on {ckpt_root}/checkpoint-{{{','.join(map(str, steps))}}} "
+             f"against {dataset} (traj 0 1 2, horizon 40, 600 steps).",
+        why="P1 WP 1.4 — a falling MSE trend is the sanity check that the fine-tune learned anything.",
+    )
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = run.devices or ""
+    results = {}
+    lines = []
+    for s in steps:
+        ck = ckpt_root / f"checkpoint-{s}"
+        if not ck.is_dir():
+            print(f"[bakeoff] {ck} missing — skipped", flush=True)
+            continue
+        cmd = [str(GR00T_PY), "gr00t/eval/open_loop_eval.py", "--dataset-path", str(dataset),
+               "--embodiment-tag", "NEW_EMBODIMENT", "--model-path", str(ck),
+               "--traj-ids", "0", "1", "2", "--action-horizon", "40", "--steps", "600",
+               "--save-plot-path", str(run.dir / "out" / f"open_loop_ckpt{s}.jpeg")]
+        lines.append(" ".join(shlex.quote(c) for c in cmd))
+        run.tee(cmd, cwd=Path(os.path.expanduser("~/Isaac-GR00T")), env=env)
+        m = run.log_tail_has(r"Average MSE across all trajs: ([\d.eE+-]+)\s+.*?Average MAE across all trajs: ([\d.eE+-]+)")
+        mse = run.log_tail_has(r"Average MSE across all trajs: ([\d.eE+-]+)")
+        mae = run.log_tail_has(r"Average MAE across all trajs: ([\d.eE+-]+)")
+        results[str(s)] = {"mse": float(mse.group(1)) if mse else None,
+                           "mae": float(mae.group(1)) if mae else None}
+        print(f"[bakeoff] checkpoint-{s}: {results[str(s)]}", flush=True)
+    run.write_cmd([f"cd {os.path.expanduser('~/Isaac-GR00T')}", f"export CUDA_VISIBLE_DEVICES={run.devices or ''}", *lines])
+    (run.dir / "out" / "open_loop_eval.json").write_text(json.dumps(
+        {"dataset": str(dataset), "checkpoints": str(ckpt_root), "traj_ids": [0, 1, 2],
+         "action_horizon": 40, "steps": 600, "results": results}, indent=2) + "\n")
+    return 0 if results and all(v["mse"] is not None for v in results.values()) else 1
+
+
+def _eval_cmd(run: Run, eval_out: Path, client: str, extra: list[str]) -> list[str]:
+    return [str(PYSH), "-m", "evaluation.eval", "--run-folder", str(eval_out), "--client", client,
+            "--task", "Isaac-Stack-Cube-DualFranka-JointPos-v0", "--embodiment", "franka_dual",
+            "--rate", str(RATE_HZ), "--replan-every", "20", "--rollouts", str(run.args.rollouts),
+            "--max-steps", str(run.args.max_steps), "--no-splat", "--headless", *extra]
+
+
+def stage_eval(run: Run) -> int:
+    """WP 1.5/1.6: serve_gr00t_joint.py (ZmqAct wire, chunk 40, replan 20) + evaluation.eval,
+    20 rollouts on the JointPos env. 2 GPUs: server on the first, Isaac on the second."""
+    ckpt = _need(run, "checkpoint", "…/out/checkpoints/checkpoint-2000")
+    devs = (run.devices or "").split(",")
+    server_dev, sim_dev = (devs[0], devs[1]) if len(devs) > 1 else (devs[0], devs[0])
+    port = run.args.port
+    eval_out = run.dir / "out" / "eval"
+    server_log = run.dir / "logs" / "server.log"
+    pidfile = run.dir / "out" / "server.pid"
+    server_cmd = [str(GR00T_PY), str(LANE_A / "serve_gr00t_joint.py"), "--model-path", str(ckpt),
+                  "--embodiment-tag", "NEW_EMBODIMENT",
+                  "--modality-config-path", str(LANE_A / "modality_config_dual_fr3.py"),
+                  "--host", "127.0.0.1", "--port", str(port), "--replan-every", "20",
+                  "--image-scale", "0.5", "--device", "cuda"]
+    eval_cmd = _eval_cmd(run, eval_out, "ZmqAct",
+                         ["--endpoint", f"tcp://127.0.0.1:{port}", "--grip-threshold", "0.5"])
+    run.write_readme(
+        what=(f"harness/lane_a/serve_gr00t_joint.py on {ckpt} (GPU {server_dev}, port {port}, 40-step "
+              f"joint chunk replanned every 20 steps) driven by evaluation.eval --client ZmqAct on the "
+              f"JointPos env (GPU {sim_dev}), {run.args.rollouts} rollouts at {RATE_HZ} Hz, "
+              f"horizon {run.args.max_steps}."),
+        why="P1 WP 1.6 — lane A's success rate; gate p1 wants >= 20 episodes in out/eval/eval_results.csv.",
+    )
+    q = lambda c: " ".join(shlex.quote(x) for x in c)  # noqa: E731
+    run.write_cmd([f"cd {FR3_REPO}", f"export PYTHONUSERBASE={USERBASE_FR3}", "",
+                   f"CUDA_VISIBLE_DEVICES={server_dev} {q(server_cmd)} > {server_log} 2>&1 &",
+                   f"echo $! > {pidfile}", "",
+                   f"CUDA_VISIBLE_DEVICES={sim_dev} {q(eval_cmd)}", "", f"kill $(cat {pidfile})"])
+    senv = dict(os.environ)
+    senv["CUDA_VISIBLE_DEVICES"] = server_dev
+    with server_log.open("w") as fh:
+        server = subprocess.Popen(server_cmd, cwd=str(REPO), env=senv,
+                                  stdout=fh, stderr=subprocess.STDOUT, text=True)
+    pidfile.write_text(f"{server.pid}\n")
+    try:
+        deadline = time.time() + 900  # model load; bounded (rule i)
+        while time.time() < deadline and server.poll() is None:
+            if "SERVER_READY" in server_log.read_text(errors="replace"):
+                break
+            time.sleep(5)
+        if server.poll() is not None or not wait_for_port("127.0.0.1", port, timeout=60):
+            print(f"[bakeoff] policy server did not come up — see {server_log}", file=sys.stderr)
+            return 1
+        print(f"[bakeoff] policy server up (pid {server.pid}) on {port}", flush=True)
+        env = sim_env({"CUDA_VISIBLE_DEVICES": sim_dev})
+        return run.tee(eval_cmd, cwd=FR3_REPO, env=env)
+    finally:
+        stop_proc(server, run, "server")
+
+
+def stage_oracle_a(run: Run) -> int:
+    """WP 1.7: the recorded joint targets on the recorded cube spawns through evaluation.eval."""
+    demos = Path(run.args.demos) if run.args.demos else _latest("shared/*_demos*")
+    export_dir = demos / "out" / "export" if demos else None
+    if export_dir is None or not export_dir.is_dir():
+        sys.exit(f"[bakeoff] no export shards under {demos}")
+    eval_out = run.dir / "out" / "eval"
+    cmd = [str(PYSH), str(LANE_A / "eval_oracle_a.py"), "--demos", str(export_dir),
+           "--run-folder", str(eval_out), "--rate", str(RATE_HZ), "--replan-every", "20",
+           "--rollouts", str(run.args.rollouts), "--max-steps", str(run.args.max_steps),
+           "--no-splat", "--headless"]
+    run.write_readme(
+        what=(f"harness/lane_a/eval_oracle_a.py over {export_dir}: episode k's recorded IK joint targets "
+              f"+ binary gripper replayed on episode k's recorded cube spawn through evaluation.eval "
+              f"(JointPos env variant with a table-driven spawn), {run.args.rollouts} rollouts at {RATE_HZ} Hz."),
+        why="P1 WP 1.7 — the A-oracle calibrates lane A: ≈100 % by construction, else the dataset/replay path is wrong.",
+    )
+    run.write_cmd([f"cd {FR3_REPO}", f"export PYTHONUSERBASE={USERBASE_FR3}",
+                   f"export CUDA_VISIBLE_DEVICES={run.devices or ''}",
+                   " ".join(shlex.quote(c) for c in cmd)])
+    return run.tee(cmd, cwd=FR3_REPO, env=sim_env({"CUDA_VISIBLE_DEVICES": run.devices or ""}))
+
+
 def stage_not_implemented(run: Run) -> int:
     print(
         f"[bakeoff] stage {run.lane}/{run.stage} is not implemented yet — "
@@ -355,9 +755,12 @@ REGISTRY = {
     ("shared", "p0.smoke"): (stage_p0_smoke, 1),
     # Later phases register here as they are built; until then they are stubs
     # so a typo fails loudly instead of silently doing nothing.
-    ("shared", "demos"): (stage_not_implemented, 1),
-    ("lane_a", "finetune"): (stage_not_implemented, 2),
-    ("lane_a", "eval"): (stage_not_implemented, 1),
+    ("shared", "demos"): (stage_demos, 1),
+    ("shared", "dataset"): (stage_dataset, 0),
+    ("lane_a", "finetune"): (stage_finetune, 2),
+    ("lane_a", "open_loop"): (stage_open_loop, 1),
+    ("lane_a", "eval"): (stage_eval, 2),
+    ("lane_a", "oracle_a"): (stage_oracle_a, 1),
     ("lane_b", "sonic_rl"): (stage_not_implemented, 4),
     ("lane_b", "export_onnx"): (stage_not_implemented, 1),
     ("lane_b", "label_tokens"): (stage_not_implemented, 1),
@@ -440,6 +843,19 @@ def main(argv=None) -> int:
                    help="prototype numbers (10 sources, 2000 steps, 20 rollouts)")
     r.add_argument("--port", type=int, default=8000,
                    help="policy-server port for stages that start one")
+    r.add_argument("--steps", default="all",
+                   help="comma-separated sub-steps to run (stage-specific; default all)")
+    r.add_argument("--resume", default=None,
+                   help="existing run folder to continue instead of creating a new one")
+    r.add_argument("--demos", default=None,
+                   help="demo run folder (shared/*_demos) for stages that read the demo set")
+    r.add_argument("--dataset", default=None,
+                   help="dataset run folder (*_dataset) for stages that read gr00t_v2")
+    r.add_argument("--checkpoint", default=None,
+                   help="checkpoint dir (…/checkpoints/checkpoint-2000) for eval stages")
+    r.add_argument("--rollouts", type=int, default=20)
+    r.add_argument("--max-steps", type=int, default=1500,
+                   help="evaluation.eval horizon at 50 Hz (30 s = the env's own episode length)")
     r.set_defaults(fn=cmd_run)
     args = ap.parse_args(argv)
     return args.fn(args)
