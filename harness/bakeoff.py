@@ -951,8 +951,10 @@ def stage_export_onnx(run: Run) -> int:
     if ckpt is None or not ckpt.exists():
         print("[bakeoff] no checkpoint (pass --checkpoint <…/last.pt>)", file=sys.stderr)
         return 1
+    # base_eval.yaml only knows `checkpoint`; every other key must be added with `++`
+    # (eval_agent_trl merges the CLI config over the checkpoint's training config last).
     cmd = [str(PYSH), "gear_sonic/eval_agent_trl.py", f"checkpoint={ckpt}",
-           "+export_onnx_only=True", "num_envs=1", "headless=True", "use_wandb=false"]
+           "++export_onnx_only=True", "++num_envs=1", "++headless=True", "++use_wandb=false"]
     run.write_readme(
         what=f"ONNX export of the SONIC universal-token module from {ckpt}: {_q(cmd)}",
         why="P2 WP 2.7: gate p2 wants out/model_encoder.onnx + out/model_decoder.onnx; "
@@ -979,6 +981,66 @@ def stage_export_onnx(run: Run) -> int:
     return 0 if ok else (rc or 1)
 
 
+def stage_decoder_replay(run: Run) -> int:
+    """WP 2.7b: closed-loop replay of ONE demo clip through the trained encoder/decoder in
+    the SONIC env (eval_agent_trl.py + harness/lane_b/replay_callback.py) ->
+    out/replay.json with mean_joint_error_rad (gate p2, WARN above 0.1 rad)."""
+    ckpt = Path(run.args.checkpoint).expanduser() if run.args.checkpoint else None
+    if ckpt is None:
+        rl = latest_run("lane_b", "sonic_rl", "out/train_summary.json")
+        if rl is not None:
+            s = json.loads((rl / "out" / "train_summary.json").read_text())
+            ckpt = Path(s["last_pt"]) if s.get("last_pt") else None
+    if ckpt is None or not ckpt.exists():
+        print("[bakeoff] no checkpoint (pass --checkpoint <…/last.pt>)", file=sys.stderr)
+        return 1
+    motions = Path(run.args.motions).expanduser() if run.args.motions else None
+    if motions is None:
+        ml = latest_run("lane_b", "motion_lib", "out/motions")
+        if ml is None:
+            print("[bakeoff] no motion library found; pass --motions", file=sys.stderr)
+            return 1
+        motions = ml / "out" / "motions"
+    # one ORIGINAL demo clip (no _M, no augmentation tag): the first by name
+    clips = sorted(p for p in motions.glob("*.pkl")
+                   if p.stem.count("_") == 2 and not p.stem.endswith("_M"))
+    if not clips:
+        clips = sorted(motions.glob("*.pkl"))
+    clip = clips[0]
+    clip_dir = run.dir / "out" / "clip"
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(clip, clip_dir / clip.name)
+    out_json = run.dir / "out" / "replay.json"
+    cmd = [
+        str(PYSH), "gear_sonic/eval_agent_trl.py", f"checkpoint={ckpt}", "++headless=True",
+        "++num_envs=1", "++use_wandb=false", "++use_encoder=g1", "++run_once=True",
+        "++eval_callbacks=[replay]",
+        "++callbacks.replay._target_=replay_callback.ReplayCallback",
+        f"++callbacks.replay.out_json={out_json}", f"++callbacks.replay.clip={clip.stem}",
+        f"++manager_env.commands.motion.motion_lib_cfg.motion_file={clip_dir}",
+        "++manager_env.commands.motion.start_from_first_frame=True",
+    ]
+    run.write_readme(
+        what=f"Decoder replay of demo clip {clip.stem} through {ckpt} in the SONIC env: {_q(cmd)}",
+        why="P2 WP 2.7: can the learned token space + decoder reproduce a handover demo? "
+            "mean_joint_error_rad < 0.1 is the target; above it is a finding (risk 2), not a stop.",
+    )
+    env = sonic_env(run.devices)
+    env["PYTHONPATH"] = f"{LANE_B}:{env.get('PYTHONPATH', '')}".rstrip(":")
+    run.write_cmd([f"cd {WBC_REPO}", f"export PYTHONUSERBASE={USERBASE_SONIC}",
+                   f"export PYTHONPATH={LANE_B}", f"export CUDA_VISIBLE_DEVICES={run.devices or ''}",
+                   "", _q(cmd)])
+    rc = run.tee(cmd, cwd=WBC_REPO, env=env)
+    if out_json.exists():
+        d = json.loads(out_json.read_text())
+        print(f"[bakeoff] replay: mean_joint_error_rad={d.get('mean_joint_error_rad')} "
+              f"measured={d.get('mean_measured_joint_error_rad')} frames={d.get('n_frames')} "
+              f"time_out={d.get('ended_by_time_out')}", flush=True)
+        return 0
+    print(f"[bakeoff] replay wrote no replay.json (rc={rc})", file=sys.stderr)
+    return rc or 1
+
+
 def stage_not_implemented(run: Run) -> int:
     print(
         f"[bakeoff] stage {run.lane}/{run.stage} is not implemented yet — "
@@ -1002,6 +1064,7 @@ REGISTRY = {
     # faults between them (P1 finding), so the RL run is single-GPU by decision.
     ("lane_b", "sonic_rl"): (stage_sonic_rl, 1),
     ("lane_b", "export_onnx"): (stage_export_onnx, 1),
+    ("lane_b", "decoder_replay"): (stage_decoder_replay, 1),
     ("lane_b", "label_tokens"): (stage_not_implemented, 1),
     ("lane_b", "finetune"): (stage_not_implemented, 2),
     ("lane_b", "eval"): (stage_not_implemented, 1),
