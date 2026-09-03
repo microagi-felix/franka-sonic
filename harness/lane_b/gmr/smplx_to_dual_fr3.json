@@ -1,0 +1,113 @@
+{
+    "robot_root_name": "base",
+    "human_root_name": "pelvis",
+    "ground_height": 0.0,
+    "human_height_assumption": 1.66,
+    "use_ik_match_table1": true,
+    "use_ik_match_table2": false,
+    "human_scale_table": {
+        "pelvis": 0.0,
+        "left_wrist": 1.2,
+        "right_wrist": 1.2
+    },
+    "ik_match_table1": {
+        "base": [
+            "pelvis",
+            0,
+            1,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "left_fr3_link7": [
+            "left_wrist",
+            100,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "right_fr3_link7": [
+            "right_wrist",
+            100,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ]
+    },
+    "ik_match_table2": {
+        "base": [
+            "pelvis",
+            0,
+            1,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "left_fr3_link7": [
+            "left_wrist",
+            100,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ],
+        "right_fr3_link7": [
+            "right_wrist",
+            100,
+            0,
+            [
+                0.0,
+                0.0,
+                0.0
+            ],
+            [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+            ]
+        ]
+    }
+}

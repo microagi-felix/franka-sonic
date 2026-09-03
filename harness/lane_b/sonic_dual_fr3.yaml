@@ -1,0 +1,178 @@
+# @package _global_
+# SONIC dual-FR3 config — franka-sonic lane B-1 (P2). Two fixed-base FR3 arms on the
+# angled rig (14 DoF, no grippers), robot-motion ("g1") encoder only.
+#
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3.yaml
+#                 -> `train_agent_trl.py +exp=sonic_dual_fr3 ...`
+#
+# Derived from sonic_h2.yaml. Everything that assumes a floating humanoid is masked here
+# rather than edited in the library (PLAN.md risk 1: "stub, do not rewrite"):
+#   * feet_acc / undesired_contacts rewards and the foot_pos_xyz termination are nulled
+#   * push_robot is nulled and the root pose/velocity reset ranges are zero: the base is
+#     fixed, and Isaac Lab would otherwise relocate the whole articulation on reset
+#   * anchor = `base` (never moves), vr_3point = [left hand, right hand, base],
+#     reward points = the two flanges (link7 + 0.107 m along z = attachment_site)
+#   * teleop and smpl encoders stay in the module (the upstream ONNX exporter enumerates
+#     them) but are never sampled and carry zero aux-loss weight; smpl data is `dummy`
+#   * cat_upper_body_poses / randomize_heading / randomize_wrist_poses off (G1 index maps)
+
+defaults:
+  - /algo: ppo_im_phc
+  - /manager_env: base_env
+  - /callbacks/read_eval
+  - /callbacks/im_resample
+  - /aux_losses: universal_token/g1_recon_and_all_latent
+  - override /trainer: trl_ppo_aux
+  - override /actor_critic: universal_token/all_mlp_v1
+  - override /manager_env/observations/tokenizer: unitoken_all_noz
+  - override /manager_env/observations/policy: local_dir_hist
+  - override /manager_env/observations/critic: privileged_mf_hist
+  - override /manager_env/events: tracking/level0_4
+  - override /manager_env/terminations: tracking/base_adaptive_strict_ori_foot_xyz
+  - override /manager_env/rewards: tracking/base_5point_local_feet_acc
+
+use_manager_env: true
+
+exp_base: ${hydra:runtime.choices.exp}
+exp_var: test
+experiment_name: ${exp_base}_${exp_var}
+experiment_dir: ${base_dir}/${project_name}/${experiment_name}-${timestamp}
+
+num_envs: 2048
+project_name: TRL_DualFR3_Track
+
+actor_prop_history_length: 10
+actor_actions_history_length: 10
+
+critic_prop_history_length: 10
+critic_actions_history_length: 10
+
+manager_env:
+  config:
+    robot:
+      type: dual_fr3
+    terrain_type: plane
+    env_spacing: 2.5
+    train_only_events: []
+  rewards:
+    feet_acc: null
+    undesired_contacts: null
+    anti_shake_ang_vel:
+      params:
+        body_names: ["left_fr3_link7", "right_fr3_link7"]
+  terminations:
+    foot_pos_xyz: null
+    ee_body_pos:
+      params:
+        body_names: ["left_fr3_link7", "right_fr3_link7"]
+  events:
+    push_robot: null
+    base_com:
+      params:
+        asset_cfg:
+          body_names: "base"
+    randomize_rigid_body_mass:
+      params:
+        asset_cfg:
+          body_names: ".*_fr3_link7"
+  observations:
+    tokenizer:
+      joint_pos_multi_future_wrist_for_smpl: null
+  commands:
+    motion:
+      anchor_body: "base"
+      vr_3point_body: ["left_fr3_link7", "right_fr3_link7", "base"]
+      vr_3point_body_offset: [[0.0, 0.0, 0.107], [0.0, 0.0, 0.107], [0.0, 0.0, 0.0]]
+      reward_point_body: ["left_fr3_link7", "right_fr3_link7"]
+      reward_point_body_offset: [[0.0, 0.0, 0.107], [0.0, 0.0, 0.107]]
+      body_names:
+        [
+          "base",
+          "left_fr3_link2",
+          "left_fr3_link4",
+          "left_fr3_link7",
+          "right_fr3_link2",
+          "right_fr3_link4",
+          "right_fr3_link7",
+        ]
+      pose_range:
+        x: [0.0, 0.0]
+        y: [0.0, 0.0]
+        z: [0.0, 0.0]
+        roll: [0.0, 0.0]
+        pitch: [0.0, 0.0]
+        yaw: [0.0, 0.0]
+      velocity_range:
+        x: [0.0, 0.0]
+        y: [0.0, 0.0]
+        z: [0.0, 0.0]
+        roll: [0.0, 0.0]
+        pitch: [0.0, 0.0]
+        yaw: [0.0, 0.0]
+      joint_position_range: [-0.05, 0.05]
+      num_future_frames: 10
+      dt_future_ref_frames: 0.1
+      smpl_num_future_frames: 10
+      smpl_dt_future_ref_frames: 0.02
+      cat_upper_body_poses: false
+      cat_upper_body_poses_prob: 0.0
+      freeze_frame_aug: true
+      teleop_sample_prob_when_smpl: 0.0
+      encoder_sample_probs:
+        g1: 1.0
+        teleop: 0.0
+        smpl: 0.0
+
+      motion_lib_cfg:
+        adaptive_sampling:
+          adp_samp_failure_rate_max_over_mean: 200
+        motion_file: null
+        smpl_motion_file: dummy
+        smpl_y_up: true
+        asset:
+          assetFileName: "dual_fr3.xml"
+
+algo:
+  config:
+    empty_cache_every_n_ppo_epoch: -1
+    num_steps_per_env: 24
+    use_clampped_std: true
+    std_clamp_min: 0.001
+    std_clamp_max: 0.5
+    max_grad_norm: 0.1
+    actor:
+      backbone:
+        reencode_smpl_g1_recon: false
+        aux_loss_coef:
+          g1_recon: 0.01
+          g1_smpl_latent: 0.0
+          g1_teleop_latent: 0.0
+          teleop_smpl_latent: 0.0
+          reencoded_smpl_g1_latent: 0.0
+        encoders:
+          g1:
+            inputs: ["command_multi_future_nonflat", "motion_anchor_ori_b_mf_nonflat"]
+          teleop:
+            inputs:
+              [
+                "command_multi_future_lower_body",
+                "vr_3point_local_target",
+                "vr_3point_local_orn_target",
+                "motion_anchor_ori_b",
+              ]
+          smpl:
+            inputs:
+              [
+                "smpl_joints_multi_future_local_nonflat",
+                "smpl_root_ori_b_multi_future",
+              ]
+        decoders:
+          g1_kin:
+            outputs: ["command_multi_future_nonflat", "motion_anchor_ori_b_mf_nonflat"]
+
+    critic:
+      backbone:
+        module_config_dict:
+          layer_config:
+            hidden_dims: [2048, 2048, 1024, 1024, 512, 512]
