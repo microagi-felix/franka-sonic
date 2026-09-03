@@ -1,4 +1,9 @@
-runs
-data
+# The two run/data symlinks at the repo ROOT only:
+#   runs -> ~/runs/franka-sonic     data -> ~/data/franka-sonic
+# Anchored with a leading slash on purpose. Unanchored `data` also matched
+# `harness/data/`, which silently kept every converter/demo script in that
+# directory out of git (AGENTS.md: code lives in harness/, data in run folders).
+/runs
+/data
 *.log
 __pycache__/
