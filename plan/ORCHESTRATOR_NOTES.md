@@ -2,6 +2,33 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 2026-09-03 18:20 UTC — 0/20 at 0.089 rad ⇒ the plant differs; train on the deployment plant
+
+Two decoders under 0.1 rad and still 0/20 means the SONIC training env and lane A's JointPos env
+are different plants and the policy has learned its own plant's response (soft 200/20 wrists ⇒ it
+over-commands targets; in a 400/80 plant the same targets overshoot). Fix on the training side,
+one variant, warm-started, `--hours 1.0`, then ceiling test:
+
+- **jp14 = jp13 + the deployment plant + reset noise**:
+  1. Copy lane A's JointPos env actuator config into `harness/lane_b/robots_dual_fr3.py` EXACTLY:
+     stiffness/damping per joint (all seven), effort and velocity limits, armature/joint friction,
+     `soft_joint_pos_limit_factor`, and the gripper mass/inertia on link7 (the SONIC MJCF has no
+     grippers; add an equivalent point mass at the flange, or the URDF's hand link, so link7's
+     inertia matches). Also match sim dt × decimation = 20 ms and the physics solver settings that
+     matter (substeps, solver iterations) if they differ.
+  2. `manager_env.commands.motion.joint_position_range: [-0.6, 0.6]` (reset noise) so the policy
+     learns to converge onto the reference from off-reference starts such as FR3_READY.
+  3. Rewards/terminations as jp13. Re-install, Hydra-compose check, launch from the best
+     checkpoint (jp12/jp13). Its in-env error will jump at first — fine.
+- While it trains: finish the per-step trace on 2 episodes and confirm the diagnosis by plotting
+  decoder target vs measured q for L_j5–j7 in the first 2 s (overshoot/oscillation = gains; a
+  slow monotone approach = start pose). Put the number in STATUS either way.
+- Oracle-side, allowed and cheap: hold the frame-0 token for the first 0.5–1 s (same as the
+  server's ready hold). Not allowed: changing the env's reset, gains or rate.
+- Ceiling test on jp14's first checkpoint whose replay is < 0.15 rad; if it scores ≥ 10/20 keep
+  training and re-test at the cap; if still ~0, stop and write the trace findings to STATUS as the
+  P5 result — do not spend attempt 3 on more reward variants.
+
 ## 2026-09-03 17:58 UTC — runtime is faithful (good); now train the start-pose gap away, keep the oracle env as is
 
 - The teacher-forced 0.227 rad settles it: the FR3-side path is right. Remaining gap = the closed loop
