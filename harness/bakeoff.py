@@ -4,6 +4,7 @@ provenance, holds the GPU claim, tees the log, and appends to plan/STATUS.md.
 
     python3 harness/bakeoff.py run shared p0.smoke
     python3 harness/bakeoff.py run lane_a finetune --gpus 2 --tiny
+    python3 harness/bakeoff.py root          # run root, free GB, storage floor
 
 Stdlib only, so plain `python3` runs it — the stages themselves shell out to
 the right interpreter (`/isaac-sim/python.sh` for the sim,
@@ -41,7 +42,15 @@ RUNS = Path(os.path.expanduser("~/runs/franka-sonic"))
 # ~11 TB but does NOT survive a pod restart. Never free space by deleting
 # (AGENTS.md rule o) — fall back, and say so everywhere.
 RUNS_FALLBACK = Path("/tmp/franka-sonic")
-MIN_HOME_FREE_GB = float(os.environ.get("DRIVER_MIN_HOME_FREE_GB", "300"))
+# Both roots, newest-last, for every helper that enumerates run folders.
+RUN_ROOTS = (RUNS, RUNS_FALLBACK)
+# 2026-09-03 03:30 UTC: home free fell 1200 -> 717 GB in 3.5 h (~140 GB ours).
+# 300 GB was less than one hour of headroom, and an ENOSPC mid-checkpoint kills
+# a 6 h attempt — so the floor is 600 GB. Precedence, highest first:
+#   env DRIVER_MIN_HOME_FREE_GB  >  ~/runs/franka-sonic/min_home_free_gb  >  default
+# The file exists so the floor can be retuned on the pod without a push.
+MIN_HOME_FREE_GB_DEFAULT = 600.0
+MIN_HOME_FREE_FILE = RUNS / "min_home_free_gb"
 STATUS = REPO / "plan" / "STATUS.md"
 GPUS_PY = REPO / "harness" / "gpus.py"
 
@@ -109,6 +118,35 @@ def free_gb(path: Path) -> float:
         return 0.0
 
 
+def _min_home_free_gb() -> tuple[float, str]:
+    """Resolved floor and where it came from (env > override file > default)."""
+    raw = os.environ.get("DRIVER_MIN_HOME_FREE_GB")
+    if raw:
+        try:
+            return float(raw), "env DRIVER_MIN_HOME_FREE_GB"
+        except ValueError:
+            print(f"[bakeoff] ignoring unparsable DRIVER_MIN_HOME_FREE_GB={raw!r}",
+                  file=sys.stderr, flush=True)
+    try:
+        return float(MIN_HOME_FREE_FILE.read_text().split()[0]), f"file {MIN_HOME_FREE_FILE}"
+    except (OSError, ValueError, IndexError):
+        pass
+    return MIN_HOME_FREE_GB_DEFAULT, "default"
+
+
+def min_home_free_gb() -> float:
+    return _min_home_free_gb()[0]
+
+
+def under_root(path: Path, root: Path) -> bool:
+    """True when `path` lives inside `root` (used to spot instance-local runs)."""
+    try:
+        Path(os.path.abspath(str(path))).relative_to(Path(os.path.abspath(str(root))))
+    except ValueError:
+        return False
+    return True
+
+
 def run_root() -> tuple[Path, str | None]:
     """Where run folders go: ~ normally, instance-local /tmp when home is full.
 
@@ -117,17 +155,18 @@ def run_root() -> tuple[Path, str | None]:
     """
     RUNS.mkdir(parents=True, exist_ok=True)
     free = free_gb(RUNS)
-    if free >= MIN_HOME_FREE_GB:
+    floor = min_home_free_gb()
+    if free >= floor:
         return RUNS, None
     RUNS_FALLBACK.mkdir(parents=True, exist_ok=True)
     note = (
         f"instance-local /tmp (NOT persistent across pod restarts) — "
-        f"$HOME had {free:.0f} GB free, below the {MIN_HOME_FREE_GB:.0f} GB floor"
+        f"$HOME had {free:.0f} GB free, below the {floor:.0f} GB floor"
     )
     print(
         "\n"
         "[bakeoff] ############################################################\n"
-        f"[bakeoff] # HOME IS FULL: {free:.0f} GB free (< {MIN_HOME_FREE_GB:.0f} GB).\n"
+        f"[bakeoff] # HOME IS FULL: {free:.0f} GB free (< {floor:.0f} GB).\n"
         f"[bakeoff] # Run folder goes to {RUNS_FALLBACK} — instance-local, NOT\n"
         "[bakeoff] # persistent across pod restarts. Record the real path in\n"
         "[bakeoff] # plan/STATUS.md and the WORKLOG. Never delete to free space\n"
@@ -149,7 +188,7 @@ class Run:
             if not (self.dir / "out").is_dir():
                 sys.exit(f"[bakeoff] --resume {self.dir} is not a run folder (no out/)")
             self.fallback = None
-            if str(self.dir).startswith(str(RUNS_FALLBACK)):
+            if under_root(self.dir, RUNS_FALLBACK):
                 self.fallback = "instance-local /tmp (NOT persistent across pod restarts)"
         else:
             day = _dt.date.today().isoformat()
@@ -557,8 +596,16 @@ def _need(run: Run, attr: str, hint: str) -> Path:
     return p
 
 
+def _find(pattern: str) -> list[Path]:
+    """Every run folder matching `pattern`, across BOTH roots (home + /tmp)."""
+    hits: list[Path] = []
+    for root in RUN_ROOTS:
+        hits += sorted(root.glob(pattern))
+    return hits
+
+
 def _latest(pattern: str) -> Path | None:
-    hits = sorted(RUNS.glob(pattern)) + sorted(RUNS_FALLBACK.glob(pattern))
+    hits = _find(pattern)
     return hits[-1] if hits else None
 
 
@@ -840,6 +887,18 @@ def append_status(line: str) -> None:
 
 
 # --------------------------------------------------------------------------- cli
+def cmd_root(args) -> int:
+    """Read-only probe: which root a NEW run folder would get, and why."""
+    floor, src = _min_home_free_gb()
+    root, note = run_root()
+    print(f"run_root            {root}")
+    print(f"floor               {floor:.0f} GB  (from {src})")
+    print(f"home free           {free_gb(RUNS):.0f} GB  ({RUNS})")
+    print(f"instance-local free {free_gb(RUNS_FALLBACK):.0f} GB  ({RUNS_FALLBACK})")
+    print(f"fallback            {note or 'no — home is at or above the floor'}")
+    return 0
+
+
 def cmd_run(args) -> int:
     key = (args.lane, args.stage)
     if key not in REGISTRY:
@@ -896,6 +955,8 @@ def main(argv=None) -> int:
     r.add_argument("--max-steps", type=int, default=1500,
                    help="evaluation.eval horizon at 50 Hz (30 s = the env's own episode length)")
     r.set_defaults(fn=cmd_run)
+    q = sub.add_parser("root", help="print the run root a new run would use, free space and floor")
+    q.set_defaults(fn=cmd_root)
     args = ap.parse_args(argv)
     return args.fn(args)
 

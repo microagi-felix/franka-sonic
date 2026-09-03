@@ -13,8 +13,19 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNS="$HOME/runs/franka-sonic"
-LANE_A="$RUNS/lane_a"
+RUNS_TMP="/tmp/franka-sonic"          # bakeoff.py's instance-local fallback root
 MIN_EPISODES=20
+
+# Run folders live under $HOME normally and under /tmp when bakeoff.py routed
+# them there because home was below the storage floor (AGENTS.md rule k), so
+# every lookup searches BOTH roots. present() drops roots that do not exist —
+# a `find` with no path argument would silently walk $PWD instead.
+present() { local d out=""; for d in $1; do [ -d "$d" ] && out="$out $d"; done; echo "${out# }"; }
+LANE_A_ALL=$(present "$RUNS/lane_a $RUNS_TMP/lane_a")
+DATASET_ALL=$(present "$RUNS $RUNS_TMP $HOME/datasets/franka-sonic")
+
+# find(1) over a space-separated root list; a no-op when the list is empty.
+find_runs() { local roots="$1"; shift; [ -n "$roots" ] || return 0; find $roots "$@" 2>/dev/null; }
 
 FAILED=0
 WARNED=0
@@ -26,12 +37,11 @@ warn() { printf 'WARN  %-34s %s\n' "$1" "${2:-}"; WARNED=$((WARNED + 1)); }
 # rows in an eval_results.csv, header excluded
 csv_rows() { awk 'NF { n++ } END { print (n > 0 ? n - 1 : 0) }' "$1" 2>/dev/null; }
 
-# newest eval_results.csv under $1 whose path matches ($2) / does not match ($3)
+# newest eval_results.csv under the roots $1 whose path matches ($2) / does not match ($3)
 find_eval_csv() {
-  local root="$1" want="$2" skip="$3" p
-  [ -d "$root" ] || return 0
-  find "$root" -maxdepth 5 -type f -path '*/out/eval/eval_results.csv' \
-       -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2- |
+  local roots="$1" want="$2" skip="$3" p
+  find_runs "$roots" -maxdepth 5 -type f -path '*/out/eval/eval_results.csv' \
+       -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2- |
   while read -r p; do
     if [ -n "$want" ]; then case "$p" in *"$want"*) ;; *) continue ;; esac; fi
     if [ -n "$skip" ]; then case "$p" in *"$skip"*) continue ;; esac; fi
@@ -44,8 +54,8 @@ echo "----------------------------------------------------------------------"
 
 # 1 -------------------------------------------------------------- GR00T v2 dataset
 # The lane-A dataset is the one whose path does NOT mention sonic (that is P3's).
-ds=$(find "$RUNS" "$HOME/datasets/franka-sonic" -maxdepth 7 -type f -name modality.json \
-       -path '*/meta/*' 2>/dev/null | grep -vi sonic | head -1)
+ds=$(find_runs "$DATASET_ALL" -maxdepth 7 -type f -name modality.json \
+       -path '*/meta/*' | grep -vi sonic | head -1)
 if [ -n "$ds" ]; then
   keys=$(grep -c '"' "$ds" 2>/dev/null)
   pass "GR00T v2 dataset modality.json" "$ds ($keys quoted lines)"
@@ -60,7 +70,7 @@ else
 fi
 
 # 2 -------------------------------------------------------------- checkpoint-2000
-ckpt=$(find "$LANE_A" -maxdepth 6 -type d -name 'checkpoint-2000' 2>/dev/null | head -1)
+ckpt=$(find_runs "$LANE_A_ALL" -maxdepth 6 -type d -name 'checkpoint-2000' | head -1)
 if [ -n "$ckpt" ]; then
   pass "lane A checkpoint-2000" "$ckpt ($(du -sh "$ckpt" 2>/dev/null | cut -f1))"
 else
@@ -68,7 +78,7 @@ else
 fi
 
 # 3 -------------------------------------------------------------- open-loop eval
-ol_dir=$(find "$LANE_A" -maxdepth 1 -type d -name '*open_loop*' 2>/dev/null | sort | tail -1)
+ol_dir=$(find_runs "$LANE_A_ALL" -maxdepth 1 -type d -name '*open_loop*' | sort | tail -1)
 if [ -n "$ol_dir" ]; then
   ol_log=$(find "$ol_dir" -maxdepth 2 -type f \( -name 'run.log' -o -name '*.json' \) \
              -size +0 2>/dev/null | head -1)
@@ -82,7 +92,7 @@ else
 fi
 
 # 4 -------------------------------------------------------------- policy eval >= 20
-csv=$(find_eval_csv "$LANE_A" "" "oracle")
+csv=$(find_eval_csv "$LANE_A_ALL" "" "oracle")
 if [ -n "$csv" ]; then
   rows=$(csv_rows "$csv")
   if [ "${rows:-0}" -ge "$MIN_EPISODES" ]; then
@@ -96,7 +106,7 @@ else
 fi
 
 # 5 -------------------------------------------------------------- A-oracle
-ocsv=$(find_eval_csv "$LANE_A" "oracle" "")
+ocsv=$(find_eval_csv "$LANE_A_ALL" "oracle" "")
 if [ -n "$ocsv" ]; then
   orows=$(csv_rows "$ocsv")
   if [ "${orows:-0}" -ge 1 ]; then

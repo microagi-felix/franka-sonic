@@ -11,6 +11,17 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REPORT="$REPO_ROOT/plan/REPORT.md"
 RUNS="$HOME/runs/franka-sonic"
+RUNS_TMP="/tmp/franka-sonic"          # bakeoff.py's instance-local fallback root
+
+# Run folders live under $HOME normally and under /tmp when bakeoff.py routed
+# them there because home was below the storage floor (AGENTS.md rule k), so
+# every lookup searches BOTH roots. present() drops roots that do not exist —
+# a `find` with no path argument would silently walk $PWD instead.
+present() { local d out=""; for d in $1; do [ -d "$d" ] && out="$out $d"; done; echo "${out# }"; }
+RUNS_ALL=$(present "$RUNS $RUNS_TMP")
+
+# find(1) over a space-separated root list; a no-op when the list is empty.
+find_runs() { local roots="$1"; shift; [ -n "$roots" ] || return 0; find $roots "$@" 2>/dev/null; }
 
 FAILED=0
 WARNED=0
@@ -72,7 +83,7 @@ else
 fi
 
 # 7 -------------------------------------------------------------- source run folders (WARN)
-n=$(find "$RUNS" -maxdepth 5 -type f -path '*/out/eval/eval_results.csv' 2>/dev/null | wc -l)
+n=$(find_runs "$RUNS_ALL" -maxdepth 5 -type f -path '*/out/eval/eval_results.csv' | wc -l)
 if [ "$n" -ge 4 ]; then
   pass "eval run folders on disk" "$n eval_results.csv (2 policies + 2 oracles expected)"
 else

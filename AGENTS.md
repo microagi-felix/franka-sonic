@@ -113,18 +113,28 @@ more `Permission denied` appears.
 
 ## k. Storage: never free space by deleting — fall back to instance-local
 
-Lustre `/home` is 99 % full (1.3 TB free on a 70 TB shared filesystem). Keep
-datasets and checkpoints small and treat "just cache it" as a decision, not a
-reflex. When space runs short (Felix, 2026-09-03):
+Lustre `/home` is 99 % full on a 70 TB shared filesystem and drains fast: free
+space fell 1200 → 717 GB in 3.5 h on 2026-09-03 (~140 GB of that ours, the rest
+other users). Keep datasets and checkpoints small and treat "just cache it" as a
+decision, not a reflex. When space runs short (Felix, 2026-09-03):
 
-1. Check before a big write: `df -BG ~`.
-2. **If home has < 300 GB free, or a write fails with ENOSPC**, put the
-   artifact under instance-local `/tmp/franka-sonic/<lane>/<run>` (the node
-   overlay, ~11 TB free) — it is **NOT persistent across pod restarts**, so
-   say so in `plan/STATUS.md`, record the real path in the run folder's
-   `config.json`, and add a WORKLOG line. `harness/bakeoff.py` does this
-   automatically for run folders it creates.
-3. **Never delete anything to make room** (rule o). If instance-local is also
+1. Check before a big write: `df -BG ~`. `python3 harness/bakeoff.py root`
+   prints the root a new run would get, both roots' free space and the floor.
+2. **The floor is 600 GB free.** Below it `harness/bakeoff.py` puts new run
+   folders on instance-local `/tmp/franka-sonic/<lane>/<run>` (the node
+   overlay, ~11 TB free) by itself and stamps `run_root_fallback` into
+   `config.json`. Override the floor with `~/runs/franka-sonic/min_home_free_gb`
+   (one number) or `DRIVER_MIN_HOME_FREE_GB` (env wins). A write that hits
+   ENOSPC anywhere goes to `/tmp/franka-sonic` too.
+3. **`/tmp` is NOT persistent across pod restarts.** Record every `/tmp` run
+   path in `plan/STATUS.md` tagged `(instance-local, not persistent)`, plus a
+   WORKLOG line.
+4. **At the end of a phase, rescue the finals.** If a final model checkpoint
+   sits on `/tmp` and home has > 100 GB free, copy **only the final model
+   directory** (bf16 weights + processor/config — never `global_step*` or
+   optimizer state) to `~/runs/franka-sonic/<lane>/final/<run-name>/`.
+   Otherwise append `NEEDS-COPY: <path>` to `plan/STATUS.md`.
+5. **Never delete anything to make room** (rule o). If both roots are
    unavailable: `BLOCKED: storage`, push, stop.
 
 ## l. Sync only via git

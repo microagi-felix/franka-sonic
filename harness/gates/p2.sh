@@ -13,10 +13,20 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNS="$HOME/runs/franka-sonic"
-LANE_B="$RUNS/lane_b"
+RUNS_TMP="/tmp/franka-sonic"          # bakeoff.py's instance-local fallback root
 WBC="$HOME/GR00T-WholeBodyControl"
 MIN_CLIPS=100
 MAX_JOINT_ERR=0.1
+
+# Run folders live under $HOME normally and under /tmp when bakeoff.py routed
+# them there because home was below the storage floor (AGENTS.md rule k), so
+# every lookup searches BOTH roots. present() drops roots that do not exist —
+# a `find` with no path argument would silently walk $PWD instead.
+present() { local d out=""; for d in $1; do [ -d "$d" ] && out="$out $d"; done; echo "${out# }"; }
+LANE_B_ALL=$(present "$RUNS/lane_b $RUNS_TMP/lane_b")
+
+# find(1) over a space-separated root list; a no-op when the list is empty.
+find_runs() { local roots="$1"; shift; [ -n "$roots" ] || return 0; find $roots "$@" 2>/dev/null; }
 
 FAILED=0
 WARNED=0
@@ -59,19 +69,19 @@ fi
 # 4 -------------------------------------------------------------- motion library
 pkl_dir=""
 pkl_n=0
-if [ -d "$LANE_B" ]; then
+if [ -n "$LANE_B_ALL" ]; then
   while read -r d; do
     [ -n "$d" ] || continue
     n=$(find "$d" -maxdepth 2 -type f -name '*.pkl' 2>/dev/null | wc -l)
     if [ "$n" -gt "$pkl_n" ]; then pkl_n=$n; pkl_dir=$d; fi
-  done < <(find "$LANE_B" -maxdepth 3 -type d -name 'motions' 2>/dev/null)
+  done < <(find_runs "$LANE_B_ALL" -maxdepth 3 -type d -name 'motions')
   if [ -z "$pkl_dir" ]; then
     # fall back to any run folder that simply holds pkls
     while read -r d; do
       [ -n "$d" ] || continue
       n=$(find "$d" -maxdepth 3 -type f -name '*.pkl' 2>/dev/null | wc -l)
       if [ "$n" -gt "$pkl_n" ]; then pkl_n=$n; pkl_dir=$d; fi
-    done < <(find "$LANE_B" -maxdepth 1 -type d -name '*motion*' 2>/dev/null)
+    done < <(find_runs "$LANE_B_ALL" -maxdepth 1 -type d -name '*motion*')
   fi
 fi
 if [ "$pkl_n" -ge "$MIN_CLIPS" ]; then
@@ -84,8 +94,8 @@ else
 fi
 
 # 5 -------------------------------------------------------------- ONNX pair
-enc=$(find "$LANE_B" -maxdepth 4 -type f -name '*encoder*.onnx' 2>/dev/null | head -1)
-dec=$(find "$LANE_B" -maxdepth 4 -type f -name '*decoder*.onnx' 2>/dev/null | head -1)
+enc=$(find_runs "$LANE_B_ALL" -maxdepth 4 -type f -name '*encoder*.onnx' | head -1)
+dec=$(find_runs "$LANE_B_ALL" -maxdepth 4 -type f -name '*decoder*.onnx' | head -1)
 if [ -n "$enc" ] && [ -n "$dec" ]; then
   pass "encoder + decoder ONNX" "$(basename "$enc") + $(basename "$dec") in $(dirname "$dec")"
 else
@@ -94,7 +104,7 @@ else
 fi
 
 # 6 -------------------------------------------------------------- decoder replay
-rep=$(find "$LANE_B" -maxdepth 4 -type f -name 'replay*.json' 2>/dev/null | head -1)
+rep=$(find_runs "$LANE_B_ALL" -maxdepth 4 -type f -name 'replay*.json' | head -1)
 if [ -n "$rep" ]; then
   err=$(python3 - "$rep" <<'PY' 2>/dev/null
 import json, sys
