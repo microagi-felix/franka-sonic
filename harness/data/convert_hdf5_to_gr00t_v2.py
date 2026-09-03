@@ -437,8 +437,37 @@ def guard_output(output: Path) -> None:
         )
 
 
+VIDEO_SIZE: tuple[int, int] | None = None  # (W, H) every mp4 must have; set from --video-size
+
+
+def parse_size(text: str | None) -> tuple[int, int] | None:
+    if not text:
+        return None
+    w, h = text.lower().split("x")
+    return int(w), int(h)
+
+
+def transcode_to_size(src: Path, dest: Path, size: tuple[int, int]) -> None:
+    """Rescale an mp4 to WxH with ffmpeg (area filter, h264/yuv420p/crf 20), frame count kept.
+
+    GR00T stacks all camera views into ONE tensor after its shortest-edge resize, so every view
+    must resize to the same shape — a 640x360 top and 424x240 wrists become 455x256 vs 452x256
+    and `torch.stack` fails in the first batch (lane_a finetune attempt 3, 2026-09-03).
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise ConvertError("ffmpeg not found on PATH; needed to rescale videos to --video-size")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
+           "-vf", f"scale={size[0]}:{size[1]}:flags=area", "-vsync", "passthrough",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-movflags", "+faststart", str(dest)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        raise ConvertError(f"ffmpeg failed rescaling {src} -> {dest}: {result.stderr.strip()[:400]}")
+
+
 def place_video(demo: dict, camera: str, dest: Path, fps: int, length: int) -> dict:
-    """Copy (or encode) one camera's mp4 into the dataset and verify it."""
+    """Copy (or encode / rescale) one camera's mp4 into the dataset and verify it."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     source = demo["videos"][camera]
     if isinstance(source, str):
@@ -446,8 +475,12 @@ def place_video(demo: dict, camera: str, dest: Path, fps: int, length: int) -> d
         if not src_path.is_file():
             raise ConvertError(f"{demo['demo_name']}: obs/{camera} points at a missing file {src_path}")
         probe = probe_video(src_path)
-        if probe["codec"] == "h264" and probe["pix_fmt"] == "yuv420p":
-            shutil.copy2(src_path, dest)  # already the target codec: no transcode
+        size_ok = VIDEO_SIZE is None or (probe["width"], probe["height"]) == VIDEO_SIZE
+        if probe["codec"] == "h264" and probe["pix_fmt"] == "yuv420p" and size_ok:
+            shutil.copy2(src_path, dest)  # already the target codec and size: no transcode
+        elif not size_ok:
+            log(f"    rescaling {camera} {probe['width']}x{probe['height']} -> {VIDEO_SIZE[0]}x{VIDEO_SIZE[1]}")
+            transcode_to_size(src_path, dest, VIDEO_SIZE)
         else:
             log(
                 f"    transcoding {camera} ({probe['codec']}/{probe['pix_fmt']} "
@@ -459,11 +492,17 @@ def place_video(demo: dict, camera: str, dest: Path, fps: int, length: int) -> d
             frames = decoder.get_frames_at(indices=list(range(len(decoder)))).data.numpy()
             encode_h264(dest, frames, fps)
     else:
+        if VIDEO_SIZE is not None and (source.shape[2], source.shape[1]) != VIDEO_SIZE:
+            import cv2
+
+            source = np.stack([cv2.resize(f, VIDEO_SIZE, interpolation=cv2.INTER_AREA) for f in source])
         encode_h264(dest, source, fps)
 
     probe = probe_video(dest)
     if probe["codec"] != "h264" or probe["pix_fmt"] != "yuv420p":
         raise ConvertError(f"{dest}: expected h264/yuv420p, got {probe['codec']}/{probe['pix_fmt']}")
+    if VIDEO_SIZE is not None and (probe["width"], probe["height"]) != VIDEO_SIZE:
+        raise ConvertError(f"{dest}: is {probe['width']}x{probe['height']}, expected {VIDEO_SIZE}")
     frames = count_frames(dest)
     if frames != length:
         raise ConvertError(
@@ -573,9 +612,11 @@ def run_validation(output: Path, modality_config: Path, max_episodes: int) -> No
 
 
 def convert(args: argparse.Namespace) -> int:
-    global LABEL_MODE, MAX_DELTA_RAD
+    global LABEL_MODE, MAX_DELTA_RAD, VIDEO_SIZE
     LABEL_MODE, MAX_DELTA_RAD = args.joint_label, args.max_delta_rad
+    VIDEO_SIZE = parse_size(args.video_size)
     log(f"[label] arm action = {joint_labels.describe(LABEL_MODE, MAX_DELTA_RAD)}")
+    log(f"[video] single resolution for all cameras: {VIDEO_SIZE or 'as exported (no rescale)'}")
     output = Path(os.path.expanduser(args.output)).resolve()
     modality_config = Path(os.path.expanduser(args.modality_config_path)).resolve()
     gr00t_root = Path(os.path.expanduser(args.gr00t_root)).resolve()
@@ -641,6 +682,7 @@ def convert(args: argparse.Namespace) -> int:
         json.dump(build_modality(), handle, indent=4)
     provenance["joint_label"] = {"mode": LABEL_MODE, "max_delta_rad": MAX_DELTA_RAD,
                                  "description": joint_labels.describe(LABEL_MODE, MAX_DELTA_RAD)}
+    provenance["video_size"] = list(VIDEO_SIZE) if VIDEO_SIZE else None
     with open(output / "meta" / "provenance.json", "w") as handle:
         json.dump(provenance, handle, indent=4)
     log(f"[meta] wrote info.json, episodes.jsonl, tasks.jsonl, modality.json, provenance.json")
@@ -693,6 +735,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-delta-rad", type=float, default=joint_labels.DEFAULT_MAX_DELTA_RAD,
                         help="per-step move bound for --joint-label ik_target_delta")
+    parser.add_argument("--video-size", default="640x360",
+                        help="WxH every camera video must have (GR00T stacks the views: one resolution); "
+                             "mismatching mp4s are rescaled with ffmpeg. '' = keep as exported")
     parser.add_argument("--modality-config-path", default=str(DEFAULT_MODALITY_CONFIG))
     parser.add_argument("--stats", dest="stats", action="store_true", default=True)
     parser.add_argument("--no-stats", dest="stats", action="store_false")

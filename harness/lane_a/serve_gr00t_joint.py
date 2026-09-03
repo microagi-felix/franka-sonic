@@ -103,26 +103,45 @@ def dataset_to_wire(row: np.ndarray) -> np.ndarray:
     return np.concatenate([row[0:7], row[14:15], row[7:14], row[15:16]]).astype(np.float32)
 
 
-def scale_image(image: np.ndarray, scale: float) -> np.ndarray:
-    """Downscale a live frame the same way the dataset frames were downscaled."""
+def parse_size(text: str | None) -> tuple[int, int] | None:
+    """'640x360' -> (640, 360); '' / None -> None (fall back to --image-scale)."""
+    if not text:
+        return None
+    w, h = text.lower().split("x")
+    return int(w), int(h)
+
+
+def scale_image(image: np.ndarray, scale: float, size: tuple[int, int] | None = None) -> np.ndarray:
+    """Resize a live frame exactly the way the dataset frames were produced.
+
+    The dataset carries ONE resolution for all three cameras (GR00T stacks the views into one
+    tensor, so they must resize to identical shapes): every mp4 is 640x360, i.e. the top camera
+    at 0.5x and the wrists resampled from 424x240 (0.5x of 848x480). `size` (W, H) reproduces
+    that; `scale` alone is the older per-camera-scale behaviour. cv2.INTER_AREA in both cases.
+    """
     image = np.asarray(image)
     if image.ndim != 3 or image.shape[-1] != 3:
         raise ValueError(f"expected an (H,W,3) frame, got {image.shape}")
     if image.dtype != np.uint8:
         image = np.clip(image, 0, 255).astype(np.uint8)
-    if scale == 1.0:
+    height, width = image.shape[:2]
+    if size is not None:
+        target = (int(size[0]), int(size[1]))
+    elif scale == 1.0:
+        return np.ascontiguousarray(image)
+    else:
+        target = (int(round(width * scale)), int(round(height * scale)))
+    if target == (width, height):
         return np.ascontiguousarray(image)
     import cv2
 
-    height, width = image.shape[:2]
-    target = (int(round(width * scale)), int(round(height * scale)))
     return np.ascontiguousarray(
         cv2.resize(image, target, interpolation=cv2.INTER_AREA)
     )
 
 
 def build_observation(
-    request: dict, instruction: str, image_scale: float
+    request: dict, instruction: str, image_scale: float, image_size: tuple[int, int] | None = None
 ) -> tuple[dict, np.ndarray]:
     """Turn one 'act' request into a GR00T observation dict.
 
@@ -134,7 +153,7 @@ def build_observation(
     for camera in CAMERAS:
         if camera not in request:
             raise KeyError(f"act request is missing camera '{camera}'")
-        frame = scale_image(request[camera], image_scale)
+        frame = scale_image(request[camera], image_scale, image_size)
         video[camera] = frame[None, None, ...]  # (B=1, T=1, H, W, 3) uint8
     observation = {
         "video": video,
@@ -181,6 +200,7 @@ class JointPolicyServer:
         if self.replan_every < 1:
             raise ValueError("--replan-every must be >= 1")
         self.image_scale = float(args.image_scale)
+        self.image_size = parse_size(getattr(args, "image_size", None))
         self.policy = None if args.dry_run else self._load_policy()
         self.chunk: np.ndarray | None = None
         self.step_in_chunk = 0
@@ -226,7 +246,7 @@ class JointPolicyServer:
         return chunk_from_action(action)
 
     def _next_row(self, request: dict) -> np.ndarray:
-        observation, state = build_observation(request, self.instruction, self.image_scale)
+        observation, state = build_observation(request, self.instruction, self.image_scale, self.image_size)
         if self.chunk is None or self.step_in_chunk >= self.replan_every:
             started = time.perf_counter()
             self.chunk = self._predict(observation, state)
@@ -325,8 +345,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--image-scale", type=float, default=0.5,
-        help="cv2.INTER_AREA downscale applied to every live frame; must match "
-             "the dataset (0.5 -> 640x360 top, 424x240 wrists). 1.0 = no resize",
+        help="cv2.INTER_AREA downscale applied to every live frame when --image-size is empty "
+             "(0.5 -> 640x360 top, 424x240 wrists). 1.0 = no resize",
+    )
+    parser.add_argument(
+        "--image-size", default="640x360",
+        help="WxH every live frame is resized to (cv2.INTER_AREA), matching the dataset's single "
+             "resolution (converter --video-size). '' = use --image-scale instead",
     )
     parser.add_argument("--instruction", default=DEFAULT_INSTRUCTION)
     parser.add_argument("--device", default="cuda")

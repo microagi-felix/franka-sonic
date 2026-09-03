@@ -572,7 +572,8 @@ def stage_dataset(run: Run) -> int:
     cmd = [str(GR00T_PY), str(DATA / "convert_hdf5_to_gr00t_v2.py"),
            "--input", str(demos / "out" / "export" / "*.hdf5"), "--output", str(out),
            "--fps", str(RATE_HZ), "--task", "hand the block from the left arm to the right",
-           "--joint-label", "ik_target_clamped", "--validate-max-episodes", "5",
+           "--joint-label", "ik_target_clamped", "--video-size", "640x360",
+           "--validate-max-episodes", "5",
            "--modality-config-path", str(LANE_A / "modality_config_dual_fr3.py")]
     run.write_readme(
         what=(f"HDF5 -> GR00T v2 conversion of {demos} (harness/data/convert_hdf5_to_gr00t_v2.py, "
@@ -712,7 +713,7 @@ def stage_eval(run: Run) -> int:
                   "--embodiment-tag", "NEW_EMBODIMENT",
                   "--modality-config-path", str(LANE_A / "modality_config_dual_fr3.py"),
                   "--host", "127.0.0.1", "--port", str(port), "--replan-every", "20",
-                  "--image-scale", "0.5", "--device", "cuda"]
+                  "--image-size", "640x360", "--device", "cuda"]
     eval_cmd = _eval_cmd(run, eval_out, "ZmqAct",
                          ["--endpoint", f"tcp://127.0.0.1:{port}", "--grip-threshold", "0.5"])
     run.write_readme(
