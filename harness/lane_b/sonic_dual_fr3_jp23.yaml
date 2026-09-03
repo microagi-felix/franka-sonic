@@ -1,0 +1,21 @@
+# @package _global_
+# sonic_dual_fr3_jp22 + a tighter hand kernel (P5 "jp23"), warm from jp20 model_step_002000.pt.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp23.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp23.yaml
+#
+# Why (ceiling tests #8/#9 on jp20, traces 22:00-22:10 UTC): with the plant fixed the B-oracle
+# fails mostly at the RIGHT arm's blind grasp because the LEFT hand releases the cube 1.3-1.8 cm
+# from where the demo did (wrist roll fine there); the A-oracle tolerance test says 1.2 cm is
+# survivable, 3 cm mostly not. jp23 = jp22 (reset-velocity noise for the start transient) with
+# tracking_vr_5point_local std 0.03 -> 0.015 m and weight 6 -> 10 so the hand-position kernel
+# still has gradient at the 1 cm scale. Everything else = jp22/jp20 (lane-A plant, encoder 1391).
+defaults:
+  - sonic_dual_fr3_jp22
+  - _self_
+
+manager_env:
+  rewards:
+    tracking_vr_5point_local:
+      weight: 10.0
+      params:
+        std: 0.015
