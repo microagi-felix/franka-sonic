@@ -5,7 +5,7 @@
 #       'bash harness/driver.sh 2>&1 | tee -a ~/runs/franka-sonic/driver/driver.log'
 #   tmux kill-window -t bakeoff:driver        # stop it
 #
-# For each phase P0..P4 it:
+# For each phase P0..P6 it (P5/P6 added 2026-09-03: decoder ceiling fix, lane B redo):
 #   1. skips the phase if plan/STATUS.md already says `GATE PN: PASS`;
 #   2. exits 2 if the last stop marker after the previous phase's PASS is a
 #      `BLOCKED:` line (a human then appends `DRIVER: resume` to clear it);
@@ -41,7 +41,7 @@ PHASE_TIMEOUT="${DRIVER_PHASE_TIMEOUT:-6h}"
 P0_WAIT_POLLS="${DRIVER_P0_WAIT_POLLS:-240}"   # 240 × 60 s = 4 h
 P0_POLL_SECONDS="${DRIVER_P0_POLL_SECONDS:-60}"
 GR00T_PY="$HOME/Isaac-GR00T/.venv/bin/python"
-PHASES="P0 P1 P2 P3 P4"
+PHASES="P0 P1 P2 P3 P4 P5 P6"
 
 mkdir -p "$LOGDIR" || exit 1
 
@@ -76,7 +76,7 @@ last_marker() {           # $1 = previous phase or ""
   fi
   tail -n "+$start" "$STATUS" \
     | grep -E '^[[:space:]]*-[[:space:]]' \
-    | grep -oE "GATE P[0-4]: PASS|BLOCKED:|DRIVER: resume" | tail -1
+    | grep -oE "GATE P[0-6]: PASS|BLOCKED:|DRIVER: resume" | tail -1
 }
 
 is_blocked() {            # $1 = previous phase or ""
