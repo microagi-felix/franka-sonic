@@ -58,11 +58,12 @@ fi
 
 # --------------------------------------------------------------------- status
 # Only log lines ("- <date> …") count as markers; the file header quotes the
-# marker syntax itself and must never be read as a verdict.
-log_lines() { grep -E '^[[:space:]]*-[[:space:]]' "$STATUS"; }
-
+# marker syntax itself and must never be read as a verdict. One grep, no pipe:
+# with `set -o pipefail`, `grep … | grep -q …` returns 141 (SIGPIPE on the
+# upstream grep) even when the pattern matched — which silently turned every
+# PASS into "not passed" once already.
 status_pass() {           # $1 = phase
-  log_lines | grep -qE "GATE $1: PASS"
+  grep -qE "^[[:space:]]*-[[:space:]].*GATE $1: PASS" "$STATUS"
 }
 
 # The last stop marker in STATUS.md after the previous phase's PASS.
