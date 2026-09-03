@@ -2,6 +2,18 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 2026-09-03 20:15 UTC — add one cheap diagnostic: slow-motion B-oracle
+
+After the A-oracle tolerance test, run a **time-stretched B-oracle** on the best decoder (jp15 or
+jp14 last): resample the 76 demo clips 1.5× slower (motion pkl at the same fps with 1.5× the
+frames; joint velocities scale down accordingly), re-label tokens with the same encoder, and
+replay through `oracle_b` with the grip labels stretched the same way (horizon 1500 steps holds
+1.5 × 812). Same episodes, same spawns, protocol otherwise unchanged; tag the run folder `_slow`.
+Reading: if successes appear, the residual is dynamic lag (PD + policy), and precision training /
+a slower approach in the demos will fix it; if it stays at zero with the hand still 1 cm off, the
+error is a static bias and the demos' grasp margin is the constraint. Record both hand-error
+(FK, grasp frames) and the oracle result. ~30 min on one device; do it before the 21:11 caps.
+
 ## 2026-09-03 20:05 UTC — attempt 3 budget: adopt jp16/jp17/jp18, tolerance test first, then wrap up
 
 - The three continuation trainers launched 19:40 (jp16 = jp14 cont., jp17 = jp15 cont., jp18 =
