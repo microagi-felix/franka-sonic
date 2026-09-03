@@ -23,3 +23,4 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
 - 2026-09-03 00:06  NEEDS-CLEANUP: ~/runs/franka-sonic/shared/2026-09-03_demos — partial MimicGen source run from that aborted attempt (sources.hdf5 690 KB, incomplete; logs/apt_ffmpeg.log, sources.log). Kept in place per rule o; the new P1 attempt must start a fresh run folder, not resume this one.
 - 2026-09-03 00:06  NEEDS-CLEANUP: /tmp/guard_battery.sh — guard-hook test battery copied in by the orchestrator to verify harness/guard.py on the pod copy. Harmless, kept per rule o.
 - 2026-09-03 00:06  DRIVER: start (pid 22109, effort xhigh, logs /home/felixminzenmay/runs/franka-sonic/driver/2026-09-03)
+- 2026-09-03 00:07  DRIVER: start (pid 22236, effort xhigh, logs /home/felixminzenmay/runs/franka-sonic/driver/2026-09-03)
