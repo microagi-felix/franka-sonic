@@ -71,6 +71,12 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import joint_labels  # noqa: E402  (harness/data/joint_labels.py — shared with the A-oracle)
+
+LABEL_MODE = joint_labels.DEFAULT_JOINT_LABEL  # set from --joint-label in convert()
+MAX_DELTA_RAD = joint_labels.DEFAULT_MAX_DELTA_RAD
+
 
 # ----------------------------------------------------------------- constants
 
@@ -247,10 +253,14 @@ def read_demo(group: h5py.Group, name: str) -> dict:
     )
     # grip command: recorder +1 = open / -1 = closed  ->  dataset 1 = closed
     grip_cmd = (1.0 - actions[:, [7, 15]]) / 2.0
+    # arm label: see harness/data/joint_labels.py (decision + measurements); LABEL_MODE is set
+    # from --joint-label in convert() so the oracle replay and the dataset agree by construction.
     action = np.concatenate(
         [
-            arr("joint_target_left", "obs", 7),
-            arr("joint_target_right", "obs", 7),
+            joint_labels.arm_label(arr("joint_pos_left", "obs", 7), arr("joint_target_left", "obs", 7),
+                                   LABEL_MODE, MAX_DELTA_RAD),
+            joint_labels.arm_label(arr("joint_pos_right", "obs", 7), arr("joint_target_right", "obs", 7),
+                                   LABEL_MODE, MAX_DELTA_RAD),
             grip_cmd,
         ],
         axis=1,
@@ -563,6 +573,9 @@ def run_validation(output: Path, modality_config: Path, max_episodes: int) -> No
 
 
 def convert(args: argparse.Namespace) -> int:
+    global LABEL_MODE, MAX_DELTA_RAD
+    LABEL_MODE, MAX_DELTA_RAD = args.joint_label, args.max_delta_rad
+    log(f"[label] arm action = {joint_labels.describe(LABEL_MODE, MAX_DELTA_RAD)}")
     output = Path(os.path.expanduser(args.output)).resolve()
     modality_config = Path(os.path.expanduser(args.modality_config_path)).resolve()
     gr00t_root = Path(os.path.expanduser(args.gr00t_root)).resolve()
@@ -626,6 +639,8 @@ def convert(args: argparse.Namespace) -> int:
     write_jsonl(output / "meta" / "tasks.jsonl", [{"task_index": 0, "task": args.task}])
     with open(output / "meta" / "modality.json", "w") as handle:
         json.dump(build_modality(), handle, indent=4)
+    provenance["joint_label"] = {"mode": LABEL_MODE, "max_delta_rad": MAX_DELTA_RAD,
+                                 "description": joint_labels.describe(LABEL_MODE, MAX_DELTA_RAD)}
     with open(output / "meta" / "provenance.json", "w") as handle:
         json.dump(provenance, handle, indent=4)
     log(f"[meta] wrote info.json, episodes.jsonl, tasks.jsonl, modality.json, provenance.json")
@@ -672,6 +687,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-skip-failed-replays", dest="skip_failed_replays", action="store_false"
     )
+    parser.add_argument(
+        "--joint-label", choices=joint_labels.JOINT_LABELS, default=joint_labels.DEFAULT_JOINT_LABEL,
+        help="arm action label (harness/data/joint_labels.py); the A-oracle must replay the same one",
+    )
+    parser.add_argument("--max-delta-rad", type=float, default=joint_labels.DEFAULT_MAX_DELTA_RAD,
+                        help="per-step move bound for --joint-label ik_target_delta")
     parser.add_argument("--modality-config-path", default=str(DEFAULT_MODALITY_CONFIG))
     parser.add_argument("--stats", dest="stats", action="store_true", default=True)
     parser.add_argument("--no-stats", dest="stats", action="store_false")

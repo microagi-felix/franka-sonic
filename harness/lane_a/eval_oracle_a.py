@@ -41,9 +41,28 @@ ORACLE_TASK_ID = "Isaac-Stack-Cube-DualFranka-JointPos-OracleA-v0"
 ORACLE_CLIENT = "OracleA"
 
 
-def load_episodes(spec: str, only_successful: bool = True) -> list[dict]:
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "data"))
+import joint_labels  # noqa: E402  (harness/data/joint_labels.py — shared with the converter)
+
+JOINT_LABELS = joint_labels.JOINT_LABELS
+
+
+def arm_labels(g, side: str, joint_label: str, max_delta_rad: float) -> np.ndarray:
+    """Lane A's absolute joint label for one arm, (T, 7) — the same function the converter uses."""
+    return joint_labels.arm_label(
+        np.asarray(g["obs"][f"joint_pos_{side}"], dtype=np.float32),
+        np.asarray(g["obs"][f"joint_target_{side}"], dtype=np.float32),
+        joint_label, max_delta_rad,
+    )
+
+
+def load_episodes(spec: str, only_successful: bool = True,
+                  joint_label: str = joint_labels.DEFAULT_JOINT_LABEL,
+                  max_delta_rad: float = joint_labels.DEFAULT_MAX_DELTA_RAD) -> list[dict]:
     import h5py
 
+    if joint_label not in JOINT_LABELS:
+        raise SystemExit(f"[oracle-a] --joint-label must be one of {JOINT_LABELS}")
     if os.path.isdir(spec):
         files = sorted(glob.glob(os.path.join(spec, "*.hdf5")))
     else:
@@ -64,8 +83,8 @@ def load_episodes(spec: str, only_successful: bool = True) -> list[dict]:
                     raise SystemExit(f"[oracle-a] {path}:{name} lacks initial_cube_pose/joint_target_* "
                                      "(export with harness/data/export_generated_50hz.py)")
                 acts = np.asarray(g["actions"], dtype=np.float32)  # IK-Abs rows; grips at 7 and 15
-                tl = np.asarray(g["obs"]["joint_target_left"], dtype=np.float32)
-                tr = np.asarray(g["obs"]["joint_target_right"], dtype=np.float32)
+                tl = arm_labels(g, "left", joint_label, max_delta_rad)
+                tr = arm_labels(g, "right", joint_label, max_delta_rad)
                 action16 = np.concatenate(
                     [tl, np.sign(acts[:, 7:8]), tr, np.sign(acts[:, 15:16])], axis=1
                 ).astype(np.float32)
@@ -148,11 +167,16 @@ def main() -> int:
     ap.add_argument("--demos", required=True, help="dir or glob of export HDF5 (video-backed schema)")
     ap.add_argument("--run-folder", required=True)
     ap.add_argument("--include-failed-replays", action="store_true")
+    ap.add_argument("--joint-label", choices=JOINT_LABELS, default=joint_labels.DEFAULT_JOINT_LABEL,
+                    help="arm label to replay (harness/data/joint_labels.py); must match the dataset")
+    ap.add_argument("--max-delta-rad", type=float, default=joint_labels.DEFAULT_MAX_DELTA_RAD)
     ap.add_argument("--start-episode", type=int, default=None,
                     help="table offset (default: the run folder's completed episode count)")
     known, rest = ap.parse_known_args()
 
-    oracle_a_table.EPISODES = load_episodes(known.demos, only_successful=not known.include_failed_replays)
+    oracle_a_table.EPISODES = load_episodes(known.demos, only_successful=not known.include_failed_replays,
+                                            joint_label=known.joint_label, max_delta_rad=known.max_delta_rad)
+    print(f"[oracle-a] arm label: {joint_labels.describe(known.joint_label, known.max_delta_rad)}", flush=True)
     oracle_a_table.START_EPISODE = (
         known.start_episode if known.start_episode is not None else completed_episodes(known.run_folder)
     )
@@ -165,7 +189,8 @@ def main() -> int:
             "start_episode": oracle_a_table.START_EPISODE,
             "task": ORACLE_TASK_ID,
             "client": ORACLE_CLIENT,
-            "action_layout": "[L fr3_joint1..7 IK targets, L grip ±1, R fr3_joint1..7, R grip ±1]",
+            "joint_label": known.joint_label,
+            "action_layout": f"[L fr3_joint1..7 ({known.joint_label}), L grip ±1, R fr3_joint1..7, R grip ±1]",
         }, fh, indent=2)
 
     register_oracle_task()
