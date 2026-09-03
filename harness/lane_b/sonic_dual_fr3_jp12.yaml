@@ -1,0 +1,17 @@
+# @package _global_
+# sonic_dual_fr3_jp11 with the joint-space signal turned up a fourth time (P5 "jp12"), from jp11.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp12.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp12.yaml
+# The lever is monotone so far (replay L_j7 2.96 -> 1.80 -> 1.50 -> 0.64 for jp6/jp7/jp11 at
+# matched ages, hand error flat at ~1.5-2 cm). jp12 = jp11 with tracking_joint_space weight
+# 15 -> 20 and the linear joint penalty -16 -> -24, warm-started from jp11 model_step_000500.pt.
+defaults:
+  - sonic_dual_fr3_jp11
+  - _self_
+
+manager_env:
+  rewards:
+    feet_acc:
+      weight: 20.0
+    upright_penalty:
+      weight: -24.0
