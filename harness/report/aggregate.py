@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P4 aggregation: the four eval run folders -> plan/REPORT.md.
+"""P4/P6 aggregation: the four eval run folders -> plan/REPORT.md.
 
     python3 harness/report/aggregate.py             # writes plan/REPORT.md
     python3 harness/report/aggregate.py --stdout    # prints the report instead
@@ -21,6 +21,13 @@ dependency, so milestone k is reached iff criteria_reached >= k), config.json
 (bakeoff stamp: args, devices, repo SHAs, storage root) and out/eval/config.json
 (evaluation.eval's own arguments: task, seed, rate, replan, horizon).
 
+Every sentence that depends on a count (the headline verdict, the milestone
+reading, the two oracle verdicts) is computed here from those csv rows, never
+written into the template: the report has to stay honest when the numbers
+change. The fine-tune blocks additionally read, per lane, the newest
+<lane>/<date>_finetune folder's cmd.sh (parity) and its
+out/checkpoints/checkpoint-2000/trainer_state.json (last logged training loss).
+
 GPU-hours come from run-folder timestamps only: the earliest of the README's
 "Launched" stamp and the first `=== <ISO> $ <cmd>` header in logs/run.log,
 to the config.json `date` (stamped when bakeoff finalises the folder), times
@@ -35,9 +42,11 @@ its {{PLACEHOLDERS}} and prints which run folders it used.
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import datetime as dt
 import json
+import math
 import os
 import re
 import shlex
@@ -70,6 +79,11 @@ CATEGORIES = [
 FOLDER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(.+?)(?:-(\d+))?$")
 HEADER_RE = re.compile(r"^=== (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\S*) \$ ")
 NOT_RECORDED = "not recorded"
+
+# gate P5's B-oracle criterion (harness/gates/p5.sh): >= 15 successes of 20
+# rollouts. Scaled to the oracle run's own episode count so the verdict text
+# survives a run with a different number of rollouts.
+OB_GATE_K, OB_GATE_N = 15, 20
 
 
 # --------------------------------------------------------------------------- small helpers
@@ -154,6 +168,34 @@ def clopper_pearson(k: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
     lower = solve(1 - alpha / 2, k - 1)
     upper = solve(alpha / 2, k)
     return (lower, upper)
+
+
+def ci_text(r: dict) -> str:
+    lo, hi = r["ci95"]
+    return f"{100 * lo:.0f}–{100 * hi:.0f} %"
+
+
+def overlap(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
+def count_text(r: dict) -> str:
+    return f"{r['n_success']}/{r['n']}"
+
+
+def gate_needed(n: int) -> int:
+    """The B-oracle gate count for an n-rollout run (15/20 of the rollouts)."""
+    return math.ceil(OB_GATE_K / OB_GATE_N * n)
+
+
+def gate_phrase(ob: dict) -> str:
+    need = gate_needed(ob["n"])
+    if ob["n"] == OB_GATE_N:
+        return f"the {need}/{OB_GATE_N} threshold gate P5 requires"
+    return (
+        f"the {need}/{ob['n']} that gate P5's {OB_GATE_K}-of-{OB_GATE_N} criterion "
+        "scales to at this rollout count"
+    )
 
 
 # --------------------------------------------------------------------------- run folders
@@ -342,6 +384,24 @@ def finetune_command(lane: str) -> tuple[Path | None, dict | None, str | None]:
     args["(program)"] = " ".join(prog)
     args["(CUDA_VISIBLE_DEVICES)"] = cuda or NOT_RECORDED
     return d, args, line
+
+
+def finetune_loss(d: Path | None, step: int = 2000) -> str:
+    """Last logged training loss of a fine-tune run.
+
+    HuggingFace's Trainer writes its whole `log_history` into every checkpoint's
+    `trainer_state.json`; the last entry carrying a `loss` key is the loss at
+    the final logged step. Anything missing (no folder, no checkpoint, no loss
+    entry -- e.g. a fine-tune still running) reads as "not recorded"."""
+    if d is None:
+        return NOT_RECORDED
+    state = read_json(d / "out" / "checkpoints" / f"checkpoint-{step}" / "trainer_state.json")
+    if not state:
+        return NOT_RECORDED
+    losses = [e["loss"] for e in state.get("log_history", []) if isinstance(e, dict) and "loss" in e]
+    if not losses:
+        return NOT_RECORDED
+    return f"{float(losses[-1]):g}"
 
 
 def modality_summary(path: Path) -> dict:
@@ -549,6 +609,181 @@ def eval_parity_table(results: dict) -> tuple[str, list[str]]:
     return md_table(header, rows), policy_diffs
 
 
+# --------------------------------------------------------------------------- computed prose
+# Everything below turns counts into sentences. No sentence here may assume an
+# outcome: each branch is chosen by the numbers in the run folders, so the
+# report stays true whatever the newest eval and oracle runs say.
+def headline_verdict(ra: dict, rb: dict, oa: dict, ob: dict) -> str:
+    need = gate_needed(ob["n"])
+    if ob["n_success"] >= need:
+        head = (
+            "**The B-oracle ceiling is open.** Replaying the encoder-labelled SONIC tokens "
+            f"through the decoder with no VLA in the loop succeeds {count_text(ob)} "
+            f"({100 * ob['success_rate']:.0f} %, mean progress {ob['progress_mean']:.3f}), at "
+            f"or above {gate_phrase(ob)}. Lane "
+            f"B's {count_text(rb)} therefore measures the VLA over the token space rather "
+            "than a controller that cannot execute its own labels, and can be read next to "
+            f"lane A's {count_text(ra)}."
+        )
+    else:
+        head = (
+            "**The B-oracle ceiling is closed.** Replaying the encoder-labelled SONIC tokens "
+            f"through the decoder with no VLA in the loop succeeds {count_text(ob)} "
+            f"({100 * ob['success_rate']:.0f} %, mean progress {ob['progress_mean']:.3f}), "
+            f"below {gate_phrase(ob)} and below "
+            f"the A-oracle's {count_text(oa)}. Lane B's {count_text(rb)} therefore cannot be "
+            "read as a VLA number: the controller under it misses the task on the recorded "
+            "spawns with no VLA in the loop at all."
+        )
+    delta = abs(ra["n_success"] - rb["n_success"])
+    if delta == 0:
+        cmp_head = f"The two policy rows are level at {count_text(ra)}"
+    else:
+        higher = "lane A" if ra["n_success"] > rb["n_success"] else "lane B"
+        cmp_head = (
+            f"The two policy rows are lane A {count_text(ra)} and lane B {count_text(rb)} "
+            f"({higher} higher by {delta} episode{'s' if delta != 1 else ''})"
+        )
+    if overlap(ra["ci95"], rb["ci95"]):
+        verdict = (
+            "do overlap, so the difference between the two rows is inside what "
+            f"{ra['n']} rollouts produce by sampling alone."
+        )
+    else:
+        verdict = (
+            f"do not overlap, so the difference is larger than sampling at n = {ra['n']} "
+            "explains — for these two runs (one checkpoint of one 2000-step fine-tune, one "
+            "task instance, one seed set), not for the two control stacks."
+        )
+    return (
+        f"{head} {cmp_head}; exact 95 % Clopper–Pearson intervals lane A {ci_text(ra)} and "
+        f"lane B {ci_text(rb)}. At n = {ra['n']} two rows are only distinguishable when their "
+        f"intervals do not overlap; these {verdict} Nothing here says which control stack is "
+        "better: this is a pipeline proof, not a result."
+    )
+
+
+def ci_sentence(results: dict) -> str:
+    parts = []
+    for key, label, *_ in CATEGORIES:
+        r = results.get(key)
+        if r is None:
+            continue
+        parts.append(f"{label.split(' — ')[0]} {count_text(r)} is compatible with {ci_text(r)}")
+    return "; ".join(parts) + "."
+
+
+def m1_note(results: dict) -> str:
+    counts = []
+    for key in ("lane_a_policy", "lane_b_policy", "lane_b_oracle"):
+        r = results.get(key)
+        if r is not None:
+            counts.append(sum(1 for e in r["episodes"] if e["reached"] >= 1))
+    if not counts:
+        return "are not recorded."
+    joined = (
+        " and ".join([", ".join(str(c) for c in counts[:-1]), str(counts[-1])])
+        if len(counts) > 1
+        else str(counts[0])
+    )
+    spread = max(counts) - min(counts)
+    tail = (
+        f"a spread of {spread} episode{'s' if spread != 1 else ''}"
+        + (", inside the sampling noise at this n." if spread <= 1 else ".")
+    )
+    return f"are {joined} episodes respectively — {tail}"
+
+
+def milestone_reading(results: dict) -> str:
+    lines = []
+    for key, label, *_ in CATEGORIES:
+        r = results.get(key)
+        short = label.split(" — ")[0]
+        if r is None:
+            lines.append(f"- **{short}**: MISSING")
+            continue
+        n = r["n"]
+        counts = [
+            sum(1 for e in r["episodes"] if e["reached"] >= k) for k in range(1, len(MILESTONES) + 1)
+        ]
+        drop = next((i for i, c in enumerate(counts) if c < n), None)
+        if drop is None:
+            drop_txt = f"no milestone falls below {n}/{n}"
+        else:
+            drop_txt = (
+                f"the first milestone not reached by every episode is {drop + 1} "
+                f"({MILESTONES[drop]}) at {counts[drop]}/{n}"
+            )
+        tally = collections.Counter(round(e["progress"], 3) for e in r["episodes"])
+        mode_val, mode_cnt = max(tally.items(), key=lambda kv: (kv[1], -kv[0]))
+        lines.append(
+            f"- **{short}**: "
+            + ", ".join(f"{c}/{n}" for c in counts)
+            + f" episodes reach milestones 1…{len(MILESTONES)}; {drop_txt}; most common "
+            f"progress {mode_val:.3f} in {mode_cnt} of {n} episodes."
+        )
+    return "\n".join(lines)
+
+
+def ob_verdict(ob: dict, oa: dict) -> str:
+    need = gate_needed(ob["n"])
+    gap = 100 * ((oa["success_rate"] if oa["n"] else 0.0) - ob["success_rate"])
+    if ob["n_success"] >= need:
+        return (
+            f"It is open: {count_text(ob)} ({100 * ob['success_rate']:.0f} %, mean progress "
+            f"{ob['progress_mean']:.3f}), at or above {gate_phrase(ob)} "
+            f"and {gap:.0f} points from the A-oracle's {count_text(oa)}. The "
+            "decoder that lane B's policy server runs executes the labels its own encoder "
+            "wrote."
+        )
+    return (
+        f"It is closed: {count_text(ob)} ({100 * ob['success_rate']:.0f} %, mean progress "
+        f"{ob['progress_mean']:.3f}), below {gate_phrase(ob)} "
+        f"and {gap:.0f} points from the A-oracle's {count_text(oa)}. The decoder "
+        "does not execute the labels its own encoder wrote, which caps lane B before the VLA "
+        "is asked anything."
+    )
+
+
+def b_verdict(ra: dict, rb: dict, ob: dict) -> str:
+    if ob["n_success"] >= gate_needed(ob["n"]):
+        return (
+            f"**Lane B's {count_text(rb)} is therefore readable as a VLA number.** With the "
+            f"ceiling at {count_text(ob)}, lane B's row measures GR00T over the token space "
+            "driving a decoder that can execute those tokens — the comparison the bake-off "
+            f"asked for. It remains one checkpoint of one 2000-step fine-tune over {rb['n']} "
+            "rollouts, with the interval quoted in section 1, and it is bounded above by the "
+            "ceiling, not by the A-oracle."
+        )
+    return (
+        f"**Consequently lane B's {count_text(rb)} is uninformative about the VLA.** Lane B's "
+        "fine-tune emitted in-range tokens (|t| ≤ 1.0, none clipped) at the same latency as "
+        "lane A; whether GR00T learned the token stream cannot be judged behind a decoder that "
+        "cannot execute the labels. A B-oracle near the A-oracle is a precondition for reading "
+        "lane B's row at all — which is why P5 gated on it and P6 re-ran it."
+    )
+
+
+def storage_note(r: dict) -> str:
+    return (
+        "instance-local `/tmp`, not persistent, `NEEDS-COPY` in STATUS.md"
+        if r["timing"]["fallback"]
+        else "Lustre home, persistent"
+    )
+
+
+def instance_local_note(results: dict) -> str:
+    if any(r["timing"]["fallback"] for r in results.values()):
+        return (
+            "Those folders do not survive a pod restart; their `eval_results.csv` and episode "
+            "JSONs are small and are tagged `NEEDS-COPY` in `plan/STATUS.md`."
+        )
+    return (
+        "Every row above is on Lustre home, so nothing in this section needs copying off "
+        "instance-local storage."
+    )
+
+
 # --------------------------------------------------------------------------- main
 def build(verbose: bool = True) -> str:
     results: dict[str, dict] = {}
@@ -603,8 +838,6 @@ def build(verbose: bool = True) -> str:
     ra, rb = results["lane_a_policy"], results["lane_b_policy"]
     oa, ob = results["lane_a_oracle"], results["lane_b_oracle"]
     n = ra["n"]
-    ci0 = clopper_pearson(0, n)[1]
-    ci1 = clopper_pearson(n, n)[0]
 
     def succ(r):
         return f"{r['n_success']}/{r['n']}"
@@ -628,6 +861,8 @@ def build(verbose: bool = True) -> str:
         "FT_B_DIR": short_path(ft_b_dir) if ft_b_dir else NOT_RECORDED,
         "FT_A_CMD": ft_a_line or NOT_RECORDED,
         "FT_B_CMD": ft_b_line or NOT_RECORDED,
+        "FT_A_LOSS": finetune_loss(ft_a_dir),
+        "FT_B_LOSS": finetune_loss(ft_b_dir),
         "MODALITY_TABLE": modality_table,
         "EVAL_PARITY_TABLE": eval_parity,
         "EVAL_PARITY_VERDICT": (
@@ -650,8 +885,12 @@ def build(verbose: bool = True) -> str:
         "OA_MIN_STEPS": str(min(oa["steps_to_success"])) if oa["steps_to_success"] else "n/a",
         "OA_MAX_STEPS": str(max(oa["steps_to_success"])) if oa["steps_to_success"] else "n/a",
         "N_ROLLOUTS": str(n),
-        "CI_ZERO_UPPER": f"{100 * ci0:.0f} %",
-        "CI_FULL_LOWER": f"{100 * ci1:.0f} %",
+        "HEADLINE_VERDICT": headline_verdict(ra, rb, oa, ob),
+        "CI_SENTENCE": ci_sentence(results),
+        "M1_NOTE": m1_note(results),
+        "MILESTONE_READING": milestone_reading(results),
+        "OB_VERDICT": ob_verdict(ob, oa),
+        "B_VERDICT": b_verdict(ra, rb, ob),
         "GPU_TABLE_SHARED": gpu_tables["shared"],
         "GPU_TABLE_A": gpu_tables["lane_a"],
         "GPU_TABLE_B": gpu_tables["lane_b"],
@@ -666,9 +905,14 @@ def build(verbose: bool = True) -> str:
         "B_DIR": short_path(rb["dir"]),
         "OA_DIR": short_path(oa["dir"]),
         "OB_DIR": short_path(ob["dir"]),
+        "A_STORAGE": storage_note(ra),
+        "B_STORAGE": storage_note(rb),
+        "OA_STORAGE": storage_note(oa),
+        "OB_STORAGE": storage_note(ob),
         "INSTANCE_LOCAL": (
             ", ".join(f"`{short_path(r['dir'])}`" for r in results.values() if r["timing"]["fallback"]) or "none"
         ),
+        "INSTANCE_LOCAL_NOTE": instance_local_note(results),
     }
 
     text = TEMPLATE.read_text()
