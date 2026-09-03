@@ -31,6 +31,16 @@ if [ ! -e "$MJ/dual_fr3_assets" ]; then
   echo "symlinked $MJ/dual_fr3_assets"
 fi
 
+# 1b. URDF (Isaac side) + the same mesh symlink next to it
+UR="$GS/data/assets/robot_description/urdf/dual_fr3"
+mkdir -p "$UR"
+install_file "$HERE/dual_fr3.urdf" "$UR/dual_fr3.urdf"
+if [ ! -e "$UR/dual_fr3_assets" ]; then
+  ln -s "$MENAGERIE" "$UR/dual_fr3_assets"
+  changed+=("$UR/dual_fr3_assets -> $MENAGERIE")
+  echo "symlinked $UR/dual_fr3_assets"
+fi
+
 # 2. robot config
 install_file "$HERE/robots_dual_fr3.py" "$GS/envs/manager_env/robots/dual_fr3.py"
 

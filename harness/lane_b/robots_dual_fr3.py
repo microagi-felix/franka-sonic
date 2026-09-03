@@ -91,12 +91,16 @@ FR3_READY_POSE = {
     ".*_fr3_joint7": 0.741,
 }
 
-# The MJCF is converted to USD ONCE by harness/lane_b/probe_isaac_names.py (Isaac Lab's
-# MjcfConverter needs the `isaacsim.asset.importer.mjcf` extension, which the training
-# app's Kit experience does not enable; the probe enables it explicitly). Training spawns
-# the converted USD, so the importer is never touched inside train_agent_trl.py.
-DUAL_FR3_USD_DIR = f"{ASSET_DIR}/robot_description/usd/dual_fr3"
-DUAL_FR3_USD = f"{DUAL_FR3_USD_DIR}/dual_fr3.usd"
+# Isaac spawns the URDF derived from the MJCF (harness/lane_b/make_dual_fr3_urdf.py), the
+# way G1/H2 are spawned. The Isaac Sim 5.1 MJCF importer is not usable on this pod (it is
+# not enabled by the headless Kit experience and, enabled by hand, wrote empty USD layers
+# and hung, 2026-09-03). Paths are made absolute at import time because the converters
+# resolve sublayers relative to the process cwd otherwise; cwd must be the
+# GR00T-WholeBodyControl root anyway (ASSET_DIR is relative).
+import os as _os
+
+DUAL_FR3_URDF = _os.path.abspath(f"{ASSET_DIR}/robot_description/urdf/dual_fr3/dual_fr3.urdf")
+DUAL_FR3_USD_DIR = _os.path.abspath(f"{ASSET_DIR}/robot_description/usd/dual_fr3_urdf")
 
 _RIGID_PROPS = sim_utils.RigidBodyPropertiesCfg(
     disable_gravity=False,
@@ -107,30 +111,29 @@ _RIGID_PROPS = sim_utils.RigidBodyPropertiesCfg(
     max_angular_velocity=1000.0,
     max_depenetration_velocity=1.0,
 )
+# No self-collision (decision, 2026-09-03): with convex-hull colliders of the FR3 meshes the
+# folded ready pose (joint 4 = -2.81) interpenetrates forearm/upper-arm hulls and the contact
+# pushes joint 4 open by 0.5-0.76 rad while "holding" the pose (probe_isaac_names.py). The
+# demos are collision-free by construction; inter-arm contact is simply not modelled here.
 _ARTICULATION_PROPS = sim_utils.ArticulationRootPropertiesCfg(
-    enabled_self_collisions=True,
+    enabled_self_collisions=False,
     solver_position_iteration_count=8,
     solver_velocity_iteration_count=4,
 )
 
-# Conversion spawner (probe only): MJCF -> instanceable USD under DUAL_FR3_USD_DIR.
-DUAL_FR3_MJCF_SPAWN = sim_utils.MjcfFileCfg(
-    asset_path=f"{ASSET_DIR}/robot_description/mjcf/dual_fr3.xml",
-    usd_dir=DUAL_FR3_USD_DIR,
-    usd_file_name="dual_fr3.usd",
-    force_usd_conversion=True,
-    fix_base=True,
-    import_inertia_tensor=True,
-    import_sites=False,
-    self_collision=True,
-    activate_contact_sensors=True,
-    rigid_props=_RIGID_PROPS,
-    articulation_props=_ARTICULATION_PROPS,
-)
-
 DUAL_FR3_CFG = ArticulationCfg(
-    spawn=sim_utils.UsdFileCfg(
-        usd_path=DUAL_FR3_USD,
+    spawn=sim_utils.UrdfFileCfg(
+        asset_path=DUAL_FR3_URDF,
+        usd_dir=DUAL_FR3_USD_DIR,
+        usd_file_name="dual_fr3.usd",
+        fix_base=True,
+        merge_fixed_joints=False,  # keep base / link0 as bodies: 17 bodies like the MJCF
+        replace_cylinders_with_capsules=False,
+        collider_type="convex_hull",
+        self_collision=False,
+        joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+            gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
+        ),
         activate_contact_sensors=True,
         rigid_props=_RIGID_PROPS,
         articulation_props=_ARTICULATION_PROPS,

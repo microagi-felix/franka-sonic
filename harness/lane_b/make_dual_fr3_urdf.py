@@ -108,9 +108,11 @@ def build(xml_path: str, meshdir: str) -> ET.Element:
                 ET.SubElement(j, "axis", xyz=f3(axis))
                 ET.SubElement(j, "limit", lower=f3([lo]), upper=f3([hi]),
                               effort=f3([abs(frc[1])]), velocity=f3([FR3_VEL[idx]]))
-                damping = joint.attrib.get("damping", default_joint.attrib.get("damping", "0"))
-                friction = joint.attrib.get("frictionloss", default_joint.attrib.get("frictionloss", "0"))
-                ET.SubElement(j, "dynamics", damping=damping, friction=friction)
+                # MuJoCo's damping/frictionloss are N*m*s/rad and N*m; the Isaac URDF importer
+                # turns URDF `friction` into a PhysX *coefficient* (friction torque = coeff x
+                # joint constraint force), so 1.137 would glue the joints (probe 2026-09-03).
+                # Damping comes from the implicit PD actuator instead. Both zero here.
+                ET.SubElement(j, "dynamics", damping="0", friction="0")
         for child in body.findall("body"):
             walk(child, name)
 

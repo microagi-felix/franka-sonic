@@ -828,6 +828,157 @@ def stage_oracle_a(run: Run) -> int:
     return run.tee(cmd, cwd=FR3_REPO, env=sim_env({"CUDA_VISIBLE_DEVICES": run.devices or ""}))
 
 
+# --------------------------------------------------------------------------- lane B (P2)
+WBC_REPO = Path(os.path.expanduser("~/GR00T-WholeBodyControl"))
+USERBASE_SONIC = os.path.expanduser("~/env/pyuser-sonic")
+LANE_B = REPO / "harness" / "lane_b"
+
+
+def sonic_env(devices: str | None) -> dict:
+    """Environment for gear_sonic under /isaac-sim/python.sh (AGENTS.md rule d)."""
+    env = dict(os.environ)
+    env["PYTHONUSERBASE"] = USERBASE_SONIC
+    env["CUDA_VISIBLE_DEVICES"] = devices or ""
+    # gear_sonic's opt/wandb default is use_wandb=True + online; never publish from the pod.
+    env["WANDB_MODE"] = "offline"
+    return env
+
+
+def latest_run(lane: str, stage_substr: str, must_have: str) -> Path | None:
+    """Newest run folder (both roots) whose name contains `stage_substr` and holds `must_have`."""
+    cands = []
+    for root in RUN_ROOTS:
+        d = root / lane
+        if not d.is_dir():
+            continue
+        for p in d.iterdir():
+            if stage_substr in p.name and (p / must_have).exists():
+                cands.append(p)
+    return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
+
+
+def _q(cmd: list[str]) -> str:
+    return " ".join(shlex.quote(c) for c in cmd)
+
+
+def stage_sonic_rl(run: Run) -> int:
+    """WP 2.4 / 2.6: SONIC PPO (train_agent_trl.py +exp=sonic_dual_fr3) on the dual-FR3
+    embodiment. `--tiny` is the num_envs=1 smoke (3 PPO iterations). The full run is bounded
+    by --hours of wall-clock: the trainer is stopped by its recorded PID and the run counts as
+    OK when a last.pt exists (the model-save callback writes it every 50 iterations)."""
+    motions = Path(run.args.motions).expanduser() if run.args.motions else None
+    if motions is None:
+        ml = latest_run("lane_b", "motion_lib", "out/motions")
+        if ml is None:
+            print("[bakeoff] no lane_b/*_motion_lib/out/motions found; pass --motions",
+                  file=sys.stderr)
+            return 1
+        motions = ml / "out" / "motions"
+    tiny = bool(run.args.tiny)
+    num_envs = 1 if tiny else run.args.num_envs
+    iters = 3 if tiny else run.args.iters
+    hours = 0.5 if tiny else run.args.hours
+    base_dir = run.dir / "out"
+    cmd = [
+        str(PYSH), "gear_sonic/train_agent_trl.py", "+exp=sonic_dual_fr3",
+        f"num_envs={num_envs}", "headless=True", f"base_dir={base_dir}",
+        f"exp_var={'smoke' if tiny else 'rl'}",
+        f"++manager_env.commands.motion.motion_lib_cfg.motion_file={motions}",
+        f"algo.config.num_learning_iterations={iters}",
+        "++callbacks.model_save.save_frequency=500",
+        "use_wandb=false",
+    ]
+    run.write_readme(
+        what=(f"SONIC PPO on the dual-FR3 embodiment: {_q(cmd)} — num_envs={num_envs}, "
+              f"{iters} PPO iterations max, wall-clock cap {hours} h, motion library {motions}."),
+        why=("P2 WP 2.6: the encoder/decoder pair lane B's GR00T fine-tune emits tokens for. "
+             "Fixed-base dual arm, 14 DoF, robot-motion encoder only; one GPU (2 allocatable, "
+             "NCCL P2P/SHM faults on this pod)." if not tiny else
+             "P2 WP 2.4: num_envs=1 smoke — body names, overrides and the motion library must "
+             "load and step before the long run."),
+    )
+    log = run.dir / "logs" / "train.log"
+    pidfile = run.dir / "out" / "train.pid"
+    run.write_cmd([
+        f"cd {WBC_REPO}", f"export PYTHONUSERBASE={USERBASE_SONIC}",
+        f"export CUDA_VISIBLE_DEVICES={run.devices or ''}", "",
+        f"{_q(cmd)} > {log} 2>&1 &", f"echo $! > {pidfile}",
+        f"# wall-clock cap {hours} h, then: kill $(cat {pidfile})",
+    ])
+    t0 = time.time()
+    with log.open("w") as fh:
+        p = subprocess.Popen(cmd, cwd=str(WBC_REPO), env=sonic_env(run.devices),
+                             stdout=fh, stderr=subprocess.STDOUT, text=True)
+    pidfile.write_text(f"{p.pid}\n")
+    print(f"[bakeoff] trainer pid {p.pid}, log {log}", flush=True)
+    killed = False
+    deadline = t0 + hours * 3600.0
+    while p.poll() is None:
+        if time.time() > deadline:
+            print("[bakeoff] wall-clock cap reached — stopping the trainer by its PID", flush=True)
+            stop_proc(p, run, "train")
+            killed = True
+            break
+        time.sleep(15)
+    rc = p.returncode if p.returncode is not None else -1
+    elapsed = time.time() - t0
+    lasts = sorted(base_dir.glob("**/last.pt"), key=lambda q: q.stat().st_mtime)
+    steps = sorted(base_dir.glob("**/model_step_*.pt"))
+    last_pt = lasts[-1] if lasts else None
+    exp_dir = last_pt.parent if last_pt else None
+    ok = (rc == 0) if tiny else bool(last_pt) and (rc == 0 or killed)
+    summary = {
+        "rc": rc, "killed_by_wallclock": killed, "elapsed_s": round(elapsed, 1),
+        "num_envs": num_envs, "iters_requested": iters, "hours_cap": hours,
+        "motions": str(motions), "last_pt": str(last_pt) if last_pt else None,
+        "experiment_dir": str(exp_dir) if exp_dir else None,
+        "model_step_checkpoints": [str(s) for s in steps], "ok": ok,
+    }
+    (run.dir / "out" / "train_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    print(f"[bakeoff] sonic_rl summary: {json.dumps(summary)}", flush=True)
+    return 0 if ok else (rc or 1)
+
+
+def stage_export_onnx(run: Run) -> int:
+    """WP 2.7a: eval_agent_trl.py +export_onnx_only=True on the RL checkpoint -> the
+    encoder/decoder ONNX pair copied to out/model_encoder.onnx + out/model_decoder.onnx."""
+    ckpt = Path(run.args.checkpoint).expanduser() if run.args.checkpoint else None
+    if ckpt is None:
+        rl = latest_run("lane_b", "sonic_rl", "out/train_summary.json")
+        if rl is not None:
+            s = json.loads((rl / "out" / "train_summary.json").read_text())
+            ckpt = Path(s["last_pt"]) if s.get("last_pt") else None
+    if ckpt is None or not ckpt.exists():
+        print("[bakeoff] no checkpoint (pass --checkpoint <…/last.pt>)", file=sys.stderr)
+        return 1
+    cmd = [str(PYSH), "gear_sonic/eval_agent_trl.py", f"checkpoint={ckpt}",
+           "+export_onnx_only=True", "num_envs=1", "headless=True", "use_wandb=false"]
+    run.write_readme(
+        what=f"ONNX export of the SONIC universal-token module from {ckpt}: {_q(cmd)}",
+        why="P2 WP 2.7: gate p2 wants out/model_encoder.onnx + out/model_decoder.onnx; "
+            "P3 labels the demos with the encoder and serves the decoder.",
+    )
+    run.write_cmd([f"cd {WBC_REPO}", f"export PYTHONUSERBASE={USERBASE_SONIC}",
+                   f"export CUDA_VISIBLE_DEVICES={run.devices or ''}", "", _q(cmd)])
+    rc = run.tee(cmd, cwd=WBC_REPO, env=sonic_env(run.devices))
+    exported = ckpt.parent / "exported"
+    found = {}
+    for tag, dst in (("_encoder.onnx", "model_encoder.onnx"), ("_decoder.onnx", "model_decoder.onnx"),
+                     ("_g1.onnx", "model_g1_pair.onnx")):
+        srcs = sorted(exported.glob(f"model_step_*{tag}"))
+        if srcs:
+            shutil.copy2(srcs[-1], run.dir / "out" / dst)
+            found[dst] = str(srcs[-1])
+    for extra in ("model_config.yaml",):
+        if (ckpt.parent / extra).exists():
+            shutil.copy2(ckpt.parent / extra, run.dir / "out" / extra)
+    (run.dir / "out" / "export_summary.json").write_text(
+        json.dumps({"checkpoint": str(ckpt), "rc": rc, "copied": found}, indent=2) + "\n")
+    ok = "model_encoder.onnx" in found and "model_decoder.onnx" in found
+    print(f"[bakeoff] export: rc={rc} copied={found}", flush=True)
+    return 0 if ok else (rc or 1)
+
+
 def stage_not_implemented(run: Run) -> int:
     print(
         f"[bakeoff] stage {run.lane}/{run.stage} is not implemented yet — "
@@ -847,8 +998,10 @@ REGISTRY = {
     ("lane_a", "open_loop"): (stage_open_loop, 1),
     ("lane_a", "eval"): (stage_eval, 2),
     ("lane_a", "oracle_a"): (stage_oracle_a, 1),
-    ("lane_b", "sonic_rl"): (stage_not_implemented, 4),
-    ("lane_b", "export_onnx"): (stage_not_implemented, 1),
+    # P2 (2026-09-03): one GPU each — only 2 of 8 devices are allocatable and NCCL P2P/SHM
+    # faults between them (P1 finding), so the RL run is single-GPU by decision.
+    ("lane_b", "sonic_rl"): (stage_sonic_rl, 1),
+    ("lane_b", "export_onnx"): (stage_export_onnx, 1),
     ("lane_b", "label_tokens"): (stage_not_implemented, 1),
     ("lane_b", "finetune"): (stage_not_implemented, 2),
     ("lane_b", "eval"): (stage_not_implemented, 1),
@@ -951,6 +1104,13 @@ def main(argv=None) -> int:
                    help="dataset run folder (*_dataset) for stages that read gr00t_v2")
     r.add_argument("--checkpoint", default=None,
                    help="checkpoint dir (…/checkpoints/checkpoint-2000) for eval stages")
+    r.add_argument("--motions", default=None,
+                   help="SONIC motion-library dir (lane_b/*_motion_lib/out/motions) for lane_b stages")
+    r.add_argument("--num-envs", type=int, default=2048, help="lane_b/sonic_rl: parallel envs")
+    r.add_argument("--iters", type=int, default=100000,
+                   help="lane_b/sonic_rl: max PPO iterations (the --hours cap usually wins)")
+    r.add_argument("--hours", type=float, default=1.5,
+                   help="lane_b/sonic_rl: wall-clock cap; the trainer is stopped by PID after it")
     r.add_argument("--rollouts", type=int, default=20)
     r.add_argument("--max-steps", type=int, default=1500,
                    help="evaluation.eval horizon at 50 Hz (30 s = the env's own episode length)")

@@ -16,6 +16,7 @@ import os
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--no-gravity", action="store_true", help="hold test without gravity")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
 args.headless = True
@@ -35,28 +36,34 @@ def main() -> None:
     sim = SimulationContext(sim_utils.SimulationCfg(dt=0.005, device=args.device))
     sim_utils.GroundPlaneCfg().func("/World/ground", sim_utils.GroundPlaneCfg())
 
-    # 1. MJCF -> USD (the Kit experience does not enable the importer; do it here)
-    from isaacsim.core.utils.extensions import enable_extension
-
-    ok = enable_extension("isaacsim.asset.importer.mjcf")
-    print("ENABLE isaacsim.asset.importer.mjcf:", ok)
-    from isaaclab.sim.converters import MjcfConverter
-
-    # The Isaac Sim 5.1 importer writes a layered USD (configuration/*.usd sublayers) and
-    # resolves those sublayers wrongly when dest_path is relative -> absolute paths here.
-    spawn_cfg = dual_fr3.DUAL_FR3_MJCF_SPAWN.replace(
-        asset_path=os.path.abspath(dual_fr3.DUAL_FR3_MJCF_SPAWN.asset_path),
-        usd_dir=os.path.abspath(dual_fr3.DUAL_FR3_USD_DIR),
-    )
-    conv = MjcfConverter(spawn_cfg)
-    print("CONVERTED USD:", conv.usd_path, os.path.getsize(conv.usd_path), "bytes")
-    assert conv.usd_path.endswith("dual_fr3.usd") and os.path.exists(conv.usd_path), conv.usd_path
-    assert os.path.abspath(conv.usd_path) == os.path.abspath(dual_fr3.DUAL_FR3_USD), (
-        conv.usd_path, dual_fr3.DUAL_FR3_USD)
-
-    # 2. spawn from the USD exactly as training does
-    robot = Articulation(dual_fr3.DUAL_FR3_CFG.replace(prim_path="/World/Robot"))
+    # spawn from the URDF exactly as training does (UrdfFileCfg converts to USD lazily)
+    print("URDF:", dual_fr3.DUAL_FR3_URDF, os.path.exists(dual_fr3.DUAL_FR3_URDF))
+    cfg = dual_fr3.DUAL_FR3_CFG.replace(prim_path="/World/Robot")
+    if args.no_gravity:
+        cfg.spawn.rigid_props.disable_gravity = True
+        print("GRAVITY DISABLED for this probe")
+    robot = Articulation(cfg)
     sim.reset()
+    # like the env's reset: put the joints AT the default pose (the USD starts at q=0)
+    robot.write_joint_state_to_sim(robot.data.default_joint_pos.clone(),
+                                   robot.data.default_joint_vel.clone())
+    robot.write_root_pose_to_sim(robot.data.default_root_state[:, :7].clone())
+    robot.reset()
+    sim.step()
+    robot.update(sim.get_physics_dt())
+    names0 = list(robot.body_names)
+    for side in ("left", "right"):
+        i = names0.index(f"{side}_fr3_link7")
+        print(f"RESET {side} link7 world pos (expect MuJoCo home {side}: "
+              f"[+-0.4767, -0.308, 0.5167]):", robot.data.body_pos_w[0, i].cpu().numpy().round(4).tolist())
+    v = robot.root_physx_view
+    for label, fn in (("max_forces", "get_dof_max_forces"), ("friction", "get_dof_friction_coefficients"),
+                      ("stiffness", "get_dof_stiffnesses"), ("damping", "get_dof_dampings"),
+                      ("armature", "get_dof_armatures"), ("max_vel", "get_dof_max_velocities")):
+        if hasattr(v, fn):
+            print(f"PHYSX dof {label}:", getattr(v, fn)()[0].cpu().numpy().round(3).tolist())
+    print("USD CACHE:", dual_fr3.DUAL_FR3_USD_DIR, os.listdir(dual_fr3.DUAL_FR3_USD_DIR)
+          if os.path.isdir(dual_fr3.DUAL_FR3_USD_DIR) else "missing")
     print("ISAAC body_names :", robot.body_names)
     print("ISAAC joint_names:", robot.joint_names)
     print("ISAAC is_fixed_base:", robot.is_fixed_base, "num_bodies:", robot.num_bodies,
@@ -76,11 +83,16 @@ def main() -> None:
 
     target = robot.data.default_joint_pos.clone()
     dt = sim.get_physics_dt()
-    for _ in range(400):
+    for k in range(400):
         robot.set_joint_position_target(target)
         robot.write_data_to_sim()
         sim.step()
         robot.update(dt)
+        if k in (0, 4, 20, 100, 399):
+            d = (robot.data.joint_pos - target)[0].cpu().numpy()
+            tq = robot.data.applied_torque[0].cpu().numpy()
+            print(f"HOLD step {k}: drift j4 L/R = {d[6]:.4f}/{d[7]:.4f}  applied torque j4 L/R = "
+                  f"{tq[6]:.1f}/{tq[7]:.1f}  j2 L/R torque = {tq[2]:.1f}/{tq[3]:.1f}")
     drift = (robot.data.joint_pos - target)[0].cpu().numpy()
     print("HOLD 2 s: joint drift from target (rad):", drift.round(4).tolist())
     print("HOLD 2 s: max |drift| =", float(abs(drift).max()))
@@ -96,4 +108,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    simulation_app.close()
+    # simulation_app.close() never returns in this headless configuration on the pod
+    # (2026-09-03); gear_sonic's own scripts end with os._exit(0) for the same reason.
+    import sys as _sys
+
+    _sys.stdout.flush()
+    os._exit(0)
