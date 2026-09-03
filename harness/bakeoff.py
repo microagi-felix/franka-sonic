@@ -414,7 +414,17 @@ def stage_demos(run: Run) -> int:
     """
     out = run.dir / "out"
     sources, annotated = out / "sources.hdf5", out / "sources_annotated.hdf5"
-    generated, export_dir = out / "generated.hdf5", out / "export"
+    fixed, export_dir = out / "sources_annotated_fixed.hdf5", out / "export"
+    # Generation output: a fresh name per attempt (a failed attempt's empty file stays — rule o);
+    # later steps read the path this step recorded in out/generated.path.
+    gen_path_file = out / "generated.path"
+    if gen_path_file.exists():
+        generated = Path(gen_path_file.read_text().strip())
+    else:
+        generated, k = out / "generated.hdf5", 1
+        while generated.exists() or generated.with_name(f"{generated.stem}_w0.hdf5").exists():
+            k += 1
+            generated = out / f"generated-{k}.hdf5"
     n_sources, n_generated, n_procs, n_shards = 10, 80, 4, 4
     env = _demo_env(run)
     run.write_readme(
@@ -435,8 +445,10 @@ def stage_demos(run: Run) -> int:
                "--num_demos", str(n_sources), "--rate", str(RATE_HZ), "--dataset", str(sources)]
     ann_cmd = [str(PYSH), str(DATA / "annotate_sources.py"), "--task", MIMIC_TASK,
                "--input_file", str(sources), "--output_file", str(annotated), "--auto", "--headless"]
+    fix_cmd = [str(GR00T_PY), str(DATA / "fix_subtask_signals.py"),
+               "--input", str(annotated), "--output", str(fixed)]
     gen_cmd = [str(PYSH), str(DATA / "generate_parallel.py"), "--task", MIMIC_TASK,
-               "--input", str(annotated), "--output", str(generated),
+               "--input", str(fixed), "--output", str(generated),
                "--total", str(n_generated), "--procs", str(n_procs)]
     exp_cmds = {
         f"export_shard{i}": [str(PYSH), str(DATA / "export_generated_50hz.py"),
@@ -456,7 +468,8 @@ def stage_demos(run: Run) -> int:
         f"export CUDA_VISIBLE_DEVICES={run.devices or ''}",
         f"export MIMIC_RATE_HZ={RATE_HZ} ISAACLAB_ROOT={ISAACLAB_ROOT}", "",
         "# 1. sources (Isaac recorder format, success-only)", q(src_cmd), "",
-        "# 2. auto-annotate subtask signals", q(ann_cmd), "",
+        "# 2. auto-annotate subtask signals, then make left_placed MimicGen-parsable (0.20 m rig)",
+        q(ann_cmd), q(fix_cmd), "",
         "# 3. MimicGen, process-level parallel", q(gen_cmd), "",
         "# 4. export (video-backed, half-res frames, IK joint targets) in parallel shards",
         *[q(c) + f" > {run.dir / 'logs' / (n + '.log')} 2>&1 &" for n, c in exp_cmds.items()],
@@ -480,6 +493,13 @@ def stage_demos(run: Run) -> int:
             return 1
         run.mark_done("annotate")
 
+    if run.wants("fixsignals") and not run.done("fixsignals"):
+        rc = run.tee(fix_cmd, cwd=REPO, env=dict(os.environ))
+        if rc != 0 or not run.log_tail_has(r"FIX_SIGNALS_DONE"):
+            print("[bakeoff] fixsignals failed", file=sys.stderr)
+            return 1
+        run.mark_done("fixsignals")
+
     if run.wants("generate") and not run.done("generate"):
         run.tee(gen_cmd, cwd=FR3_REPO, env=env)
         m = run.log_tail_has(r"PARALLEL_GEN_DONE: (\d+) episodes merged .*aggregate (\d+)/(\d+) = ([\d.]+)% success")
@@ -489,6 +509,7 @@ def stage_demos(run: Run) -> int:
         keep = {"episodes": int(m.group(1)), "successes": int(m.group(2)),
                 "trials": int(m.group(3)), "keep_rate_pct": float(m.group(4))}
         (out / "keep_rate.json").write_text(json.dumps(keep, indent=2) + "\n")
+        gen_path_file.write_text(f"{generated}\n")
         run.mark_done("generate", json.dumps(keep))
         print(f"[bakeoff] generate: {keep}", flush=True)
 
