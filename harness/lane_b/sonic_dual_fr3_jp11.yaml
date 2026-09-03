@@ -1,0 +1,26 @@
+# @package _global_
+# sonic_dual_fr3_jp7 with the joint-space signal turned up once more (P5 "jp11"), from jp7.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp11.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp11.yaml
+#
+# The reward-volume lever is the one that has worked in P5 (jp3 -> jp6 -> jp7: replay 0.60 ->
+# 0.31 -> 0.27, L_j7 2.96 -> 2.16). A hold test on jp7's ckpt-500 decoder (16:51 UTC) shows the
+# policy still outputs a near-default left-wrist target even when the robot sits at the
+# reference (-3.02 rad) and the token says so — the (token, proprio) -> L_j7 mapping is being
+# learned slowly, not blocked. jp11 = jp7 with tracking_joint_space weight 10 -> 15 (far std 3.0
+# w 0.5, wide 0.25, tight 0.25) and the linear joint penalty -8 -> -16 (1.14/rad per joint),
+# warm-started from jp7 model_step_001000.pt. Everything else = jp7.
+defaults:
+  - sonic_dual_fr3_jp7
+  - _self_
+
+manager_env:
+  rewards:
+    feet_acc:
+      weight: 15.0
+      params:
+        w_far: 0.5
+        w_wide: 0.25
+        w_tight: 0.25
+    upright_penalty:
+      weight: -16.0
