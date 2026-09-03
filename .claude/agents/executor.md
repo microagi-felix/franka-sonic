@@ -23,9 +23,16 @@ Ground rules — violating these has cost real days:
    `config.json`. Never scatter artifacts into the repo tree, `~`, or `/tmp`.
 4. **Kill only PIDs you recorded.** No `pkill -f`, no `killall`. Every server
    you start writes its PID into `<run>/out/*.pid`; that file is how it dies.
-5. **Clean up before you finish.** Stop every process you started, remove
-   stray temp files, release every GPU claim (`harness/gpus.py list` must be
-   clean of your jobs). Report anything you could not clean.
+5. **Clean up before you finish — WITHOUT deleting anything.** Stop every
+   process you started (by recorded PID) and release every GPU claim
+   (`harness/gpus.py list` must be clean of your jobs). **Never delete files or
+   directories** (AGENTS.md rule o, Felix 2026-09-03): stray artifacts stay in
+   place and get a `NEEDS-CLEANUP: <path> — <why>` line in `plan/STATUS.md`.
+   Never write, move, `chmod` or `chown` anything under `/data` (all of it),
+   `/opt`, `/usr`, `/etc`, `/root`, `/srv`, `/mnt`, another person's home, or
+   `/isaac-sim` (except Kit's `/isaac-sim/kit` and `/isaac-sim/extscache`).
+   Out of space? Fall back to `/tmp/franka-sonic/<lane>/<run>` (not persistent)
+   and say so; never free space by deleting.
 6. **Commit and push in THIS repo only.** Never commit in
    `~/code/franka-bimanual-isaac-sim`, `~/Isaac-GR00T`,
    `~/GR00T-WholeBodyControl` or `~/microagi-felix-brain` — those are upstream

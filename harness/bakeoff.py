@@ -28,6 +28,7 @@ import os
 import shlex
 import signal
 import socket
+import shutil
 import subprocess
 import sys
 import time
@@ -35,6 +36,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 RUNS = Path(os.path.expanduser("~/runs/franka-sonic"))
+# Felix, 2026-09-03: "if out of storage use instance local or stop". Lustre
+# /home sits at 99 % on a shared 70 TB filesystem; the node overlay (/tmp) has
+# ~11 TB but does NOT survive a pod restart. Never free space by deleting
+# (AGENTS.md rule o) — fall back, and say so everywhere.
+RUNS_FALLBACK = Path("/tmp/franka-sonic")
+MIN_HOME_FREE_GB = float(os.environ.get("DRIVER_MIN_HOME_FREE_GB", "300"))
 STATUS = REPO / "plan" / "STATUS.md"
 GPUS_PY = REPO / "harness" / "gpus.py"
 
@@ -94,12 +101,50 @@ def repo_shas() -> dict[str, str | None]:
     return shas
 
 
+# --------------------------------------------------------------------------- run root
+def free_gb(path: Path) -> float:
+    try:
+        return shutil.disk_usage(path).free / (1024 ** 3)
+    except OSError:
+        return 0.0
+
+
+def run_root() -> tuple[Path, str | None]:
+    """Where run folders go: ~ normally, instance-local /tmp when home is full.
+
+    Returns (root, fallback_note). The note is stamped into config.json so a
+    reader always knows an artifact is on non-persistent storage.
+    """
+    RUNS.mkdir(parents=True, exist_ok=True)
+    free = free_gb(RUNS)
+    if free >= MIN_HOME_FREE_GB:
+        return RUNS, None
+    RUNS_FALLBACK.mkdir(parents=True, exist_ok=True)
+    note = (
+        f"instance-local /tmp (NOT persistent across pod restarts) — "
+        f"$HOME had {free:.0f} GB free, below the {MIN_HOME_FREE_GB:.0f} GB floor"
+    )
+    print(
+        "\n"
+        "[bakeoff] ############################################################\n"
+        f"[bakeoff] # HOME IS FULL: {free:.0f} GB free (< {MIN_HOME_FREE_GB:.0f} GB).\n"
+        f"[bakeoff] # Run folder goes to {RUNS_FALLBACK} — instance-local, NOT\n"
+        "[bakeoff] # persistent across pod restarts. Record the real path in\n"
+        "[bakeoff] # plan/STATUS.md and the WORKLOG. Never delete to free space\n"
+        "[bakeoff] # (AGENTS.md rules k and o).\n"
+        "[bakeoff] ############################################################\n",
+        file=sys.stderr, flush=True,
+    )
+    return RUNS_FALLBACK, note
+
+
 # --------------------------------------------------------------------------- run folder
 class Run:
     def __init__(self, lane: str, stage: str, args: argparse.Namespace):
         self.lane, self.stage, self.args = lane, stage, args
         day = _dt.date.today().isoformat()
-        base = RUNS / lane / f"{day}_{stage}"
+        root, self.fallback = run_root()
+        base = root / lane / f"{day}_{stage}"
         d, n = base, 1
         while d.exists():
             n += 1
@@ -142,6 +187,7 @@ class Run:
                     "date": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                     "cuda_visible_devices": self.devices,
                     "run_dir": str(self.dir),
+                    "run_root_fallback": self.fallback,
                     "repo_shas": repo_shas(),
                 },
                 indent=2, sort_keys=True, default=str,

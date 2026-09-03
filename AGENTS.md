@@ -24,10 +24,12 @@ used**. `harness/bakeoff.py` does the acquire/release for you.
 No `pkill -f`, no `killall`, no `kill -9 $(pgrep …)`. Other tenants share the
 node. Kill only PIDs your own run folder recorded (`<run>/out/*.pid`).
 
-## c. `/data/lustre/shared` is READ-ONLY
+## c. All of `/data` is READ-ONLY
 
-Read freely. Never write, move, delete or `mkdir` there. It is multi-user
-storage; the guard hook blocks the obvious forms, but the rule is yours.
+Read freely. Never write, move, delete, `mkdir`, `chmod` or `chown` anywhere
+under `/data` — the whole tree, not just `/data/lustre/shared`. It is
+multi-user storage that other people depend on; the guard hook blocks the
+obvious forms, but the rule is yours.
 
 ## d. Install only under `~`
 
@@ -109,11 +111,21 @@ the RTX renderer fails to create a scene renderer and **every Isaac env
 creation dies** (it broke the first P0 smoke). Widen to `/isaac-sim/kit` if
 more `Permission denied` appears.
 
-## k. Lustre is 99 % full
+## k. Storage: never free space by deleting — fall back to instance-local
 
-1.3 TB free on a 70 TB shared filesystem. Keep datasets and checkpoints small,
-delete failed-run artifacts, and treat "just cache it" as a decision, not a
-reflex.
+Lustre `/home` is 99 % full (1.3 TB free on a 70 TB shared filesystem). Keep
+datasets and checkpoints small and treat "just cache it" as a decision, not a
+reflex. When space runs short (Felix, 2026-09-03):
+
+1. Check before a big write: `df -BG ~`.
+2. **If home has < 300 GB free, or a write fails with ENOSPC**, put the
+   artifact under instance-local `/tmp/franka-sonic/<lane>/<run>` (the node
+   overlay, ~11 TB free) — it is **NOT persistent across pod restarts**, so
+   say so in `plan/STATUS.md`, record the real path in the run folder's
+   `config.json`, and add a WORKLOG line. `harness/bakeoff.py` does this
+   automatically for run folders it creates.
+3. **Never delete anything to make room** (rule o). If instance-local is also
+   unavailable: `BLOCKED: storage`, push, stop.
 
 ## l. Sync only via git
 
@@ -153,3 +165,31 @@ while a fine-tune trains, a retarget batch on CPU. Rules that do not bend:
   appends to STATUS.md and pushes.
 - Parallel subagents only for CPU or authoring work; serialise anything that
   touches a GPU or the git index.
+- **Rule o applies to subagents too**: no deletions, nothing written outside
+  our roots. Say so in the subagent's prompt — it does not inherit your
+  conversation.
+
+## o. Never delete anything. Never touch shared folders.
+
+Felix, 2026-09-03, verbatim: *"tell the agent also not to delete anything and
+be careful! there are shared folders which should not be touched"* and *"if out
+of storage use instance local or stop"*.
+
+- **No deletions of any kind on this pod** — files, directories, run folders,
+  caches, checkpoints, `git clean`, `rm`, `rmdir`, `unlink`, `shred`,
+  `truncate`, `find -delete`, `rsync --delete`, `shutil.rmtree`, `os.remove`.
+  Not even things you created yourself, not even a failed run's artifacts, not
+  even to free space.
+- **Stale artifacts stay in place** and get a line in `plan/STATUS.md`:
+  `NEEDS-CLEANUP: <path> — <why>`. A human decides later.
+- **Shared and system folders are never written, moved, `chmod`-ed or
+  `chown`-ed**: all of `/data`, `/opt`, `/usr`, `/etc`, `/root`, `/srv`,
+  `/mnt`, other people's homes, and `/isaac-sim` — with the single authorised
+  exception of Kit's portable-mode dirs (`/isaac-sim/kit`, `/isaac-sim/extscache`,
+  rule j).
+- **Be conservative.** If a step would modify anything outside the workspace
+  repo, `~/runs/franka-sonic`, `~/data/franka-sonic`, `~/env/pyuser-*`,
+  `~/Isaac-GR00T/.venv` or `/tmp/franka-sonic` → **STOP and write
+  `BLOCKED: <reason>`** in STATUS.md, push, end the turn.
+- `harness/guard.sh` + `harness/guard.py` enforce the obvious forms. False
+  positives are expected: rewrite the command, never work around the rule.
