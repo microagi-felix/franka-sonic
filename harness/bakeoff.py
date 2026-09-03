@@ -679,12 +679,19 @@ def stage_open_loop(run: Run) -> int:
                "--traj-ids", "0", "1", "2", "--action-horizon", "40", "--steps", "600",
                "--save-plot-path", str(run.dir / "out" / f"open_loop_ckpt{s}.jpeg")]
         lines.append(" ".join(shlex.quote(c) for c in cmd))
+        before = run.log.stat().st_size if run.log.exists() else 0
         run.tee(cmd, cwd=Path(os.path.expanduser("~/Isaac-GR00T")), env=env)
-        m = run.log_tail_has(r"Average MSE across all trajs: ([\d.eE+-]+)\s+.*?Average MAE across all trajs: ([\d.eE+-]+)")
-        mse = run.log_tail_has(r"Average MSE across all trajs: ([\d.eE+-]+)")
-        mae = run.log_tail_has(r"Average MAE across all trajs: ([\d.eE+-]+)")
-        results[str(s)] = {"mse": float(mse.group(1)) if mse else None,
-                           "mae": float(mae.group(1)) if mae else None}
+        # parse only THIS checkpoint's section of the log (the first match would be ckpt-500's)
+        import re
+        with run.log.open("rb") as fh:
+            fh.seek(before)
+            section = fh.read().decode("utf-8", "replace")
+        mse = re.findall(r"Average MSE across all trajs: ([\d.eE+-]+)", section)
+        mae = re.findall(r"Average MAE across all trajs: ([\d.eE+-]+)", section)
+        per = re.findall(r"MSE for trajectory (\d+): ([\d.eE+-]+), MAE: ([\d.eE+-]+)", section)
+        results[str(s)] = {"mse": float(mse[-1]) if mse else None,
+                           "mae": float(mae[-1]) if mae else None,
+                           "per_traj": {t: {"mse": float(a), "mae": float(b)} for t, a, b in per}}
         print(f"[bakeoff] checkpoint-{s}: {results[str(s)]}", flush=True)
     run.write_cmd([f"cd {os.path.expanduser('~/Isaac-GR00T')}", f"export CUDA_VISIBLE_DEVICES={run.devices or ''}", *lines])
     (run.dir / "out" / "open_loop_eval.json").write_text(json.dumps(
