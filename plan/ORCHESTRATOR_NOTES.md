@@ -2,6 +2,36 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 2026-09-03 17:35 UTC — the 0/20 on jp7 is almost certainly the oracle path; find it before more variants
+
+A decoder at 0.226 rad / 1.6 cm in its own env scoring 0/20 with progress 0.008 (below P3's 0.033) means
+the FR3-side runtime, not the policy. Tests that discriminate, cheapest first (CPU, minutes each):
+
+1. **Teacher-forced runtime replay** (what P3 did at 08:46): feed the demo's RECORDED FR3 joints +
+   the jp7 offline tokens through `harness/lane_b/sonic_decoder.py` exactly as `eval_oracle_b.py`
+   calls it; compare decoder targets to the reference per joint. Expected ≈ 0.2 rad if the FR3 →
+   SONIC → FR3 mapping is right. If it is ≫ 0.5 rad, the bug is in that mapping: joint ORDER
+   (IsaacLab breadth-first left_j1, right_j1, left_j2 … vs the FR3 env's [Lq1..7 | Rq1..7]),
+   the joint-6 offset (SONIC q6 = FR3 q6 − 2.5307, applied on the way IN for proprio and on the
+   way OUT for targets, never twice, never zero times), joint velocities (rad/s, same order),
+   `joint_pos_rel` = q_sonic − SONIC default pose (the P2 default, not the FR3 ready pose),
+   `last_action` = the raw policy action (not the target), history filled with the FIRST real obs
+   or zeros exactly as the SONIC env does at reset.
+2. **Round-trip identity**: run the A-oracle's recorded FR3 joint targets through the runtime's
+   FR3→SONIC and SONIC→FR3 conversions; must be identical to 1e-6.
+3. **Initial state**: the SONIC env always starts AT the reference pose (RSI). Confirm the oracle
+   episode's first token is the demo's frame-0 token and the FR3 env's reset pose equals the demo's
+   frame-0 joints; if the env resets to a different ready pose, hold frame-0 tokens for ~1 s first.
+4. **Plant**: compare the JointPos env's actuator gains / effort limits with SONIC's 400/80 + 200/20;
+   plot decoder target vs measured q for one oracle episode (the 4 PNG frames + per-step logging).
+   A stiffer/softer plant changes the closed-loop feel but does not zero the task — a convention
+   bug does.
+5. Fix in `sonic_decoder.py` (the policy server shares it — P6 depends on this), re-run
+   `oracle_b` on the best checkpoint (jp11/jp12 by replay), then the gate. The trainers keep
+   running to their caps; do not launch further variants until the oracle path is proven with a
+   ≥ 10/20 result.
+6. Record the per-joint teacher-forced numbers in STATUS whichever way it goes.
+
 ## 2026-09-03 16:30 UTC — jp6 is close; test the ceiling NOW, and attack the left wrist roll in parallel
 
 jp6 ckpt-1000 replays at 0.309 rad with the 13-joint mean at 0.105 rad and body error 1.8 cm — the
