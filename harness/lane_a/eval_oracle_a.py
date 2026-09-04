@@ -79,7 +79,11 @@ def load_episodes(spec: str, only_successful: bool = True,
             demos = sorted(f["data"].keys(), key=lambda n: int(n.split("_")[1]))
             for name in demos:
                 g = f["data"][name]
-                if only_successful and not bool(g.attrs.get("replay_success", True)):
+                # `jointpos_replay_success` (harness/data/jointpos_screen.py, P7) is absent on
+                # every export written before the screen existed, and absent means True — so a
+                # round-1 export loads exactly as it always did.
+                if only_successful and not (bool(g.attrs.get("replay_success", True))
+                                            and bool(g.attrs.get("jointpos_replay_success", True))):
                     skipped += 1
                     continue
                 if "initial_cube_pose" not in g or "joint_target_left" not in g["obs"]:

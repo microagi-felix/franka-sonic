@@ -621,7 +621,8 @@ def stage_demos(run: Run) -> int:
         print(f"[bakeoff] export: {total} episodes -> {export_dir}", flush=True)
 
     if run.wants("coverage") and not run.done("coverage"):
-        rc = run.tee(cov_cmd, cwd=REPO, env=dict(os.environ))
+        # `env` (not os.environ) so coverage.json records the MIMIC_SPAWN_* the generation ran with.
+        rc = run.tee(cov_cmd, cwd=REPO, env=env)
         if rc != 0 or not run.log_tail_has(r"COVERAGE_DONE"):
             print("[bakeoff] coverage failed", file=sys.stderr)
             return 1

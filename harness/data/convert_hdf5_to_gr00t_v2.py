@@ -319,6 +319,12 @@ def collect_demos(paths: list[Path], skip_failed: bool, max_episodes: int) -> li
                 if skip_failed and success is not None and not bool(success):
                     log(f"  skip {path.name}:{name} (replay_success=False)")
                     continue
+                # P7: the open-loop JointPos replay verdict (harness/data/jointpos_screen.py).
+                # Absent on every export written before the screen existed, and absent means True.
+                jp = group.attrs.get("jointpos_replay_success", None)
+                if skip_failed and jp is not None and not bool(jp):
+                    log(f"  skip {path.name}:{name} (jointpos_replay_success=False)")
+                    continue
                 demo = read_demo(group, f"{path.name}:{name}")
                 demo["source_file"] = str(path)
                 demo["source_dir"] = str(path.parent)
