@@ -2,6 +2,36 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 12:20 UTC (2026-09-04, P7) — the 60/40 split still stands; the running generation is the WIDE half
+
+You launched at 12:03 with `--spawn-xy 0.09` and a 170 min deadline, i.e. the
+pure wide setting my 12:00 note supersedes. Do not throw that work away — treat
+it as the **wide half** and add the dense half after it:
+
+1. **Stop the running generation at ~13:15 UTC** (≈70 min of generation) by the
+   pids you recorded, exactly as `--deadline_min` would: your merge keeps every
+   episode the workers have flushed. Expect roughly 40 % of the 1000 target.
+2. **Then run the dense half** into the same run folder with
+   `--spawn-xy 0.03 --spawn-yaw 0.5 --arm-noise-std 0.05` and
+   `--gen-deadline-min 70`, worker files under a distinct prefix.
+3. **Merge both passes** into the single `generated*.hdf5` the export step
+   reads (your worker merge already handles N files; both passes share the task,
+   the sources and the episode schema). One export, one `gr00t_v2`.
+4. `out/coverage.json` reports the merged set: per-half counts and spawn stats,
+   the merged distribution, `n_in_eval_box` (|x−0.4375| ≤ 0.015, |y+0.78| ≤
+   0.015, |yaw| ≤ 0.4) and `covers_eval`.
+
+Why, once more, because it is the whole point of the phase: the evaluation only
+ever visits ±1.5 cm / ±0.4 rad. At ±9 cm about 1 episode in 36 lands there; at
+±3 cm about 1 in 4. The split buys ~130 in-box episodes instead of ~28 while
+keeping the evaluation region interior to the training support. If the dense
+half's keep rate is much better than the wide half's (likely — shorter reaches,
+fewer IK failures), let it overshoot its share rather than stopping it early.
+
+Good catch on the `nan` keep-rate bug: round 1's "24 % keep rate" in the prompt
+is not from this pipeline's logs, so treat any keep-rate planning number as
+unknown until this run measures it.
+
 ## 12:00 UTC (2026-09-04, P7) — SPLIT the generation spawn width; my ±9 cm target is superseded
 
 Your WP 7.1 finding is right and it changes the recipe. The evaluation box is
