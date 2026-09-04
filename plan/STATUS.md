@@ -526,3 +526,36 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
     DECISION (recorded): the prompt's "every 500 iterations" cadence was sized for ~2300 iterations in 4 h; at the measured rate it would mean 23 tests per variant x 6 variants, which two eval devices cannot serve. Ceiling tests therefore run at iteration 500/1000 for all six, then only on the leaders at a wider spacing, plus one test of every variant's last.pt at the cap.
     HARNESS BUG FOUND AND FIXED (would bite any parallel campaign): `harness/bakeoff.py` picked a run-folder name with `while d.exists()` and then `mkdir(parents=True)`, so two stages launched in the same second computed the same suffix and the loser died with FileExistsError (it did, at 16:26 UTC — the C0500 ceiling test). mkdir is now the arbiter and the loser takes the next suffix. NEEDS-CLEANUP: none from that failure (the loser created nothing); the C0500 data point was dropped, C is tested at iteration 1000 instead.
     WP 8.3 SECURING PASS RUNNING (CPU only, --gpus 0, 16:39): the full 891-episode relabel with A0500's encoder into ~/runs/franka-sonic/lane_b/2026-09-04_label_tokens (whose `obs` step was pre-computed at 16:04 for all 891 clips in 57.5 s, off the critical path). This makes the gate satisfiable now; if a later checkpoint beats 18/20 the relabel is repeated once with that encoder into a fresh folder and becomes the newest.
+- 2026-09-04 16:40  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-3
+- 2026-09-04 16:41  bakeoff lane_b/label_tokens OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-4
+- 2026-09-04 16:45  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-2
+- 2026-09-04 16:46  bakeoff lane_b/export_onnx OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-4
+- 2026-09-04 16:47  bakeoff lane_b/decoder_replay OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-4
+- 2026-09-04 16:48  bakeoff lane_b/label_tokens OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-5
+- 2026-09-04 16:52  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-3
+- 2026-09-04 16:53  bakeoff lane_b/export_onnx OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-5
+- 2026-09-04 16:54  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-5
+- 2026-09-04 16:55  bakeoff lane_b/label_tokens OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-6
+- 2026-09-04 16:55  bakeoff lane_b/label_tokens OK  rc=0  gpus=none  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens
+- 2026-09-04 16:57  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-4
+- 2026-09-04 16:58  bakeoff lane_b/export_onnx OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-6
+- 2026-09-04 16:59  bakeoff lane_b/decoder_replay OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-6
+- 2026-09-04 17:00  bakeoff lane_b/label_tokens OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-7
+- 2026-09-04 17:07  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-5
+- 2026-09-04 17:08  bakeoff lane_b/export_onnx OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-7
+- 2026-09-04 17:08  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-7
+- 2026-09-04 17:09  bakeoff lane_b/label_tokens OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-8
+- 2026-09-04 17:12  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-6
+- 2026-09-04 17:18  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-7
+- 2026-09-04 17:20  P8 WP 8.3 SECURING PASS DONE + WP 8.2 SERIES (iteration-1000 round, all six variants).
+    RELABEL (A0500's encoder, CPU only, 16:39-16:47, 8 min — not the ~50 min the prompt budgeted): ~/runs/franka-sonic/lane_b/2026-09-04_label_tokens/out/gr00t_v2_sonic = **891 episodes / 722 576 frames / 2673 videos / 1.9 GB**, i.e. EXACTLY lane A's ~/runs/franka-sonic/shared/2026-09-04_dataset-2/out/gr00t_v2 episode set. `encode`: 891 episodes, |token| max 1.0000 (bound 1.25), distance from the 1/16 FSQ grid 0.0. Timing breakdown for the record: `obs` 891 clips 57.5 s, `encode` ~90 s, `dataset` (parquet rewrite + 2673 byte-for-byte video copies + stats) ~6 min. Gate check 2 ("token dataset == lane A episodes") PASSES on it as of 16:47.
+    CEILING SERIES so far — checkpoint -> replay rad -> whole-clip flange L/R cm -> B-oracle N/20 -> mean progress. All on the SAME first 20 round-2 episodes, all through the same `p8_ceiling.sh`:
+      A0500  jp24 4096 seed 0  it 500   0.049  L 1.1 / R 0.9  **18/20**  0.942
+      A1000  jp24 4096 seed 0  it 1000  0.049  L 1.1 / R 0.9    14/20    0.875
+      B1000  jp24 4096 seed 1  it 1000  0.048  L 1.1 / R 1.0  **18/20**  0.958
+      C1000  jp24 8192 seed 0  it 1000  0.045  L 0.9 / R 0.9  **18/20**  0.942
+      D1000  jp24 8192 seed 1  it 1000  0.049  L 0.8 / R 1.1    17/20    0.950
+      E1000  jp26 4096 (std_tight 0.15->0.08)  it 1000  0.047  L 1.1 / R 1.1  12/20  0.842
+      F1000  jp27 8192 (joint weight 25->40)   it 1000  0.046  L 1.3 / R 1.0  13/20  0.858
+    READING. (1) **Both reward knobs hurt**: jp26 12/20 and jp27 13/20 against jp24's 17-18/20 at the same iteration. The P5 recipe is not improved by sharpening the joint kernel or by weighting it harder on the larger reference set — jp24 (jp20 + the round-2 library, nothing else) is the recipe, which is what the prompt's "do not improve the plant" warning predicted. (2) **Round 1's finding reproduces exactly**: replay error does not rank decoders — 0.045-0.049 rad spans 12/20 to 18/20, and the best replay (C1000, 0.045) is not the best ceiling. Only the 20-rollout test ranks. (3) **The ceiling is not monotone in iterations**: variant A went 18/20 at 500 to 14/20 at 1000 on a deterministic test set, so the selection has to sweep checkpoints, not just train longer. Current leader: B1000 (18/20, progress 0.958 — the P5 winner's round-1 progress on round 1's easier +/-6 cm episodes was also 0.958).
+    Ceiling-test lanes q3/q4 launched 17:12/17:18 for the iteration-2000 and -3000 rounds (jp24 variants prioritised, both knob variants tested once more at 2000 for the record). Trainers all still running, caps ~20:02 UTC.
