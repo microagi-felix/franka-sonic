@@ -485,7 +485,12 @@ def stage_demos(run: Run) -> int:
     n_procs, n_shards, n_replay = a.n_procs, a.n_shards, a.n_replay
     spawn_xy, spawn_yaw = a.spawn_xy, a.spawn_yaw
     coverage_json = out / "coverage.json"
-    replay_pick = out / "replay_episodes.json"
+    # A re-drawn replay check gets its own pick file and its own eval folder: evaluation.eval
+    # resumes a run folder that already holds rows, and a second draw is a different experiment.
+    # Seed 0 keeps round 1's names.
+    tag = "" if a.replay_seed == 0 else f"_s{a.replay_seed}"
+    replay_pick = out / f"replay_episodes{tag}.json"
+    replay_dir = out / f"replay_check{tag}"
     env = _demo_env(run)
     run.write_readme(
         what=(
@@ -498,7 +503,7 @@ def stage_demos(run: Run) -> int:
             + f", exported in {n_shards} shards as video-backed "
             f"training-schema HDF5 with the differential-IK joint targets recorded per step, then "
             f"out/coverage.json (measured spawn distribution vs the evaluation range) and a "
-            f"{n_replay}-episode replay through the JointPos env (out/replay_check)."
+            f"{n_replay}-episode replay through the JointPos env ({replay_dir.name})."
         ),
         why=(
             "No demo HDF5 existed when P1 started (gate p0 covers the environment half only). "
@@ -526,7 +531,7 @@ def stage_demos(run: Run) -> int:
     cov_cmd = [str(GR00T_PY), str(DATA / "spawn_coverage.py"),
                "--export", str(export_dir / "*.hdf5"), "--output", str(coverage_json)]
     replay_cmd = [str(PYSH), str(LANE_A / "eval_oracle_a.py"),
-                  "--demos", str(export_dir), "--run-folder", str(out / "replay_check"),
+                  "--demos", str(export_dir), "--run-folder", str(replay_dir),
                   "--rate", str(RATE_HZ), "--rollouts", str(n_replay),
                   "--max-steps", str(run.args.max_steps), "--no-splat", "--headless"]
     q = lambda c: " ".join(shlex.quote(x) for x in c)  # noqa: E731
@@ -646,7 +651,7 @@ def stage_demos(run: Run) -> int:
         idx = json.loads(replay_pick.read_text())["indices"]
         rc = run.tee(replay_cmd + ["--episode-indices", ",".join(str(i) for i in idx)],
                      cwd=FR3_REPO, env=env)
-        csv = out / "replay_check" / "eval_results.csv"
+        csv = replay_dir / "eval_results.csv"
         rows = [l for l in csv.read_text().splitlines()[1:] if l.strip()] if csv.exists() else []
         ok = len(rows) >= len(idx) and all(",True," in l for l in rows[:len(idx)])
         if rc != 0 or not ok:

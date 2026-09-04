@@ -93,7 +93,8 @@ def main() -> int:
     ap.add_argument("--eval-yaw", type=float, default=None, help="override the parsed eval half-range (rad)")
     ap.add_argument("--eval-centre", default=None, help="override the parsed eval centre, 'x,y'")
     ap.add_argument("--only-successful", action="store_true",
-                    help="restrict the statistics to episodes whose replay_success is True")
+                    help="restrict the statistics to the episodes a dataset build would keep: "
+                         "replay_success AND jointpos_replay_success (a missing attr means True)")
     args = ap.parse_args()
 
     ev = _eval_range()
@@ -117,7 +118,8 @@ def main() -> int:
                 g = h["data"][name]
                 if "initial_cube_pose" not in g:
                     continue
-                ok = bool(g.attrs.get("replay_success", False))
+                ok = (bool(g.attrs.get("replay_success", False))
+                      and bool(g.attrs.get("jointpos_replay_success", True)))
                 n_all += 1
                 n_ok += int(ok)
                 if args.only_successful and not ok:
