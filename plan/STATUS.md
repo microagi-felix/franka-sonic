@@ -511,3 +511,4 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
     Storage projection: at round 1's 1.9 s/iteration (4096 envs, warm) a 4 h run is ~7500 iterations = ~15 checkpoints x 407 MB per variant, ~40 GB for all six; every checkpoint is KEPT (HARD RULE 1, no rotation). Home 2949 GB free.
     WP 8.3 pre-run RUNNING (CPU, --gpus 0, in parallel with training): the `obs` step of the FULL 891-episode relabel does not depend on the encoder, so it is being computed now and the winner's run resumes that folder with `--steps validate,encode,check,dataset`.
     NEEDS-CLEANUP: /tmp/franka-sonic/lane_b/p8/ (launcher scripts, launcher logs and pids for the six variants and the obs pre-run; instance-local, not persistent).
+- 2026-09-04 16:03  bakeoff lane_b/label_tokens OK  rc=0  gpus=none  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens
