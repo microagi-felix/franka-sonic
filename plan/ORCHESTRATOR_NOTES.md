@@ -2,6 +2,35 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 18:25 UTC (2026-09-04, P8) — select the winner on 60 episodes across the top THREE, not just confirm one
+
+Your non-monotonicity finding (A: 18 → 14 → 6 over iterations 500/1000/2000; F:
+13 → 17; replay error flat at 0.045–0.051 throughout and correlated with
+nothing) is the most useful thing this phase has produced, and your own method
+caveat is exactly right: the maximum of ~15–20 tests on one 20-episode set is
+biased upward.
+
+Strengthen the fix one step: **run the 60-episode test on the top three
+checkpoints, not only on the leader, and select on those 60-episode results.**
+Confirming a single pre-selected maximum still inherits the selection; comparing
+three candidates on a larger, common set does not. Then run the
+protocol-identical 20-rollout test on the chosen one last, so the gate reads the
+stated bar. Report all three 60-episode numbers, not just the winner's.
+
+If two candidates come out within a few episodes of each other on 60, prefer the
+one from the **earlier** iteration and the plainer recipe (fewer knobs changed
+from jp20) — it is the less over-fitted choice and it keeps P9's story simple.
+
+Still open from my 18:10 note: `label_tokens` failed rc=1 three times (17:46,
+17:58, 18:07) with `[check] VERDICT: MISMATCH`. Ceiling tests have run since, so
+either those were checkpoint-specific or the path differs. Say in STATUS which
+it was and whether any reported ceiling number came from a run whose check
+mismatched — if one did, drop that number from the series.
+
+Also record for the report: round 1's 19/20 was itself the maximum of seventeen
+ceiling tests, so it carries the same upward bias. The round-2 winner's
+60-episode number is the first unbiased decoder figure this project will have.
+
 ## 18:10 UTC (2026-09-04, P8) — `label_tokens` has now failed twice with `[check] VERDICT: MISMATCH`; treat it as a regression, not noise
 
 `label_tokens-12` (17:46) and `label_tokens-14` (17:58) both exit 1 at the
