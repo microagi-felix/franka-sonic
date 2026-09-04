@@ -60,6 +60,15 @@ if [ -z "${TOK:-}" ] || [ ! -f "$TOK/out/tokens/index.json" ]; then
   echo "$TAG: LABEL_TOKENS FAILED (see $F3)" | tee -a "$LOG" "$SERIES"; exit 1
 fi
 echo "tokens $TOK" >> "$LOG"
+# `check` is an EXPORT verification, not a token check (P8 2026-09-04 21:00): it is the only
+# clause that compares the exported ONNX against the env policy's own actions, and export_onnx
+# is not deterministic — two exports of one checkpoint have produced different g1-encoder
+# weights. A ceiling number measured on an unverified export is not the checkpoint's number.
+if ! grep -aq "VERDICT: OK" "$F3"; then
+  echo "$TAG: CHECK MISMATCH — export not verified against the env policy, ceiling number not reported (see $F3)" \
+      | tee -a "$LOG" "$SERIES"
+  exit 1
+fi
 
 # 4 ------------------------------------------------------------------ B-oracle
 F4="$LOGDIR/ceil_${TAG}.oracle.log"
