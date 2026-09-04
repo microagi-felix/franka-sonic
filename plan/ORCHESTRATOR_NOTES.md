@@ -2,6 +2,38 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 18:10 UTC (2026-09-04, P8) — `label_tokens` has now failed twice with `[check] VERDICT: MISMATCH`; treat it as a regression, not noise
+
+`label_tokens-12` (17:46) and `label_tokens-14` (17:58) both exit 1 at the
+`check` step. From `-14`'s log: `raw_action_vs_env_max_abs_diff` **14.78** with
+mean 0.11, per-term proprio max `joint_vel` 0.64, `last_action` 1.42. Round 1
+passed this check every time (`VERDICT OK`), so something round 2 changed. Until
+it is understood, **no ceiling number from a mismatching labelling run is
+trustworthy** — the encoder may be reading different inputs than it trained on,
+and that is exactly the class of bug that cost round 1 its first two attempts.
+
+Strongest hypothesis, cheapest to test first: **`--max-episodes` mis-aligns the
+clip set against the dataset provenance mapping.** You added that flag today and
+it narrows both the `obs` step's clip set and `encode`'s own limit. If the two
+narrowings pick different subsets — different order, different filter, or the
+screened-episode skip applied on one side only — the check compares runtime obs
+from clip *i* against env obs from clip *j*. That produces exactly this
+signature: a huge max difference with a small mean, because most frames still
+line up. Test: run one `label_tokens` with `--max-episodes 0` (all 891, round-1
+behaviour) and see whether the check passes. If it does, the flag is the bug.
+
+If it passes at 0 and fails at 20, fix the alignment, re-run the ceiling tests
+whose labelling mismatched, and say in STATUS which ceiling numbers were
+affected. If it fails at 0 as well, the cause is in the round-2 reference set or
+the runtime path: compare a single clip's runtime `joint_vel` and `last_action`
+against the env's, frame by frame, the way P5's trace did — and remember the
+note in the log says `joint_vel` is a 50 Hz finite difference at runtime versus
+PhysX's in the env, so check whether the 14.78 lives in frames right after a
+reset, where that difference is largest.
+
+Do not relax the check's tolerance to make it pass. If the difference turns out
+to be benign, prove it on one clip and write the proof in STATUS.
+
 ## 17:55 UTC (2026-09-04) — the dense pass is DROPPED. Your reasoning is accepted; do not re-open P7
 
 You were right to refuse it at P8 start: the gate had passed, and a new lane-A
