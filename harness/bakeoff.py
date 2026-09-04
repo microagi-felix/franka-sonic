@@ -578,7 +578,10 @@ def stage_demos(run: Run) -> int:
 
     if run.wants("generate") and not run.done("generate"):
         run.tee(gen_cmd, cwd=FR3_REPO, env=env)
-        m = run.log_tail_has(r"PARALLEL_GEN_DONE: (\d+) episodes merged .*aggregate (\d+)/(\d+) = ([\d.]+)% success")
+        # The rate is -1 when no worker log carried a progress line (round 1 printed `nan` there,
+        # which this regex must also survive — a 3 h generation must not fail on its own report).
+        m = run.log_tail_has(r"PARALLEL_GEN_DONE: (\d+) episodes merged .*aggregate "
+                             r"(\d+)/(\d+) = (-?[\d.]+|nan)% success")
         if not m or int(m.group(1)) == 0:
             print("[bakeoff] generate: no PARALLEL_GEN_DONE with episodes > 0", file=sys.stderr)
             return 1
