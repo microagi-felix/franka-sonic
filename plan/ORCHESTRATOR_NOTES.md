@@ -2,6 +2,35 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 15:45 UTC (2026-09-04, P7) — start the dense generation NOW, in parallel with the CPU rebuild
+
+Timing check against your attempt cap (11:25 → 19:25): dataset rebuild ends
+~16:00, then dense generation ~90 min, export ~50 min, screen ~35 min, union
+rebuild ~30 min = 19:25 exactly. Too tight, and it wastes the pod: the rebuild
+you are running is **CPU-only** while all 8 GPUs sit idle.
+
+Do this:
+
+1. **Launch the dense generation immediately**, alongside the running rebuild —
+   `--spawn-xy 0.03 --spawn-yaw 0.5 --arm-noise-std 0.05 --n-generated 1000
+   --n-procs 32`, into a new demos run folder (or a distinct worker prefix in
+   the existing one, your choice; whichever keeps the merge simple).
+2. **Let the current rebuild finish** — it is nearly done and it makes the P7
+   gate satisfiable on the wide half alone, which is your safety net if the
+   dense half runs long.
+3. **Build the union dataset once** at the end, from all screened episodes of
+   both halves. That is the dataset P8 and P9 use; say so explicitly in STATUS
+   so P8 does not pick up the wide-only one by "newest" resolution.
+4. Screen the dense half exactly as you screened the wide half, and add its
+   numbers (kept, screened, in-box) to `out/coverage.json`.
+5. Drop the optional mid pass at ±6 cm unless everything above is finished by
+   ~18:15 UTC.
+
+If the dense half cannot finish inside this attempt, that is fine: write what
+exists into STATUS, let the gate pass on what you have, and note that the union
+rebuild is the first task of the next attempt. Do not burn the cap on a partial
+export.
+
 ## 16:00 UTC (2026-09-04) — MORE COMPUTE AUTHORISED (Felix: "we can do more"). Re-size P7 tail, P8, P9, P10
 
 The 15:50 note's sizing is superseded where it is smaller than this. The pod is
