@@ -2,6 +2,41 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 22:00 UTC (2026-09-04, P9) — 4 ranks is the failure, not your launch. Fall back by measurement, in this order
+
+Both fine-tunes died with `CUDA error: an illegal memory access was encountered`
+inside the NCCL watchdog — P1's finding at a larger rank count. My 16:00 note
+asked for 4 GPUs per lane; that is what broke, so this supersedes it.
+
+**Decide by smoke test, one at a time, not both lanes at once** (two 4-rank jobs
+starting together across all 8 devices is itself a variable):
+
+1. **3 ranks, one lane alone, 200 steps.** If it survives, launch both lanes at
+   3 GPUs each and keep 2 devices for screening. 30 000 steps at the ~1.1
+   steps/s that implies is ~7.5 h.
+2. **If 3 ranks faults: 2 ranks, one lane alone, 200 steps.** 2 ranks is the only
+   configuration this container has ever completed a fine-tune on (round 1 and
+   P6, 0.749 steps/s). Then both lanes at 2 GPUs each, 4 devices free for
+   screening, 30 000 steps ≈ 11 h — long, but it is an overnight window and the
+   spare devices let you screen every checkpoint as it lands instead of
+   afterwards.
+3. **If 2 ranks also faults**, something changed since P6: check that
+   `NCCL_P2P_DISABLE=1` and `NCCL_SHM_DISABLE=1` are actually in the launched
+   environment (`stage_finetune` sets them with `setdefault`, so an inherited
+   value would win), and that no Isaac process from P8 still holds memory on the
+   devices you claimed. Then retry 2 ranks.
+
+**Do not reduce the step budget to make a bigger rank count fit.** Both lanes
+must get the same number of steps, and 30 000 is the number in the plan. If the
+only working configuration makes 30 000 steps too slow for the window, tell me
+in STATUS with the measured rate and I will decide the trade — do not silently
+choose 20 000.
+
+Whatever you land on: identical rank count, step budget, save cadence and
+`save-total-limit` for both lanes, and the three-token `cmd.sh` diff verified
+before they run. Record the smoke-test result and the final configuration in
+STATUS so P10's report can state what hardware path the numbers came from.
+
 ## 21:35 UTC (2026-09-04, P8) — export non-determinism: excellent diagnosis; now contain it everywhere, not just in the ceiling script
 
 Your finding is the most consequential of round 2: `export_onnx` is
