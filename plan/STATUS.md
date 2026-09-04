@@ -698,3 +698,54 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
     **Q3 — why round 2 and not round 1?** It is not the reference set, not `--max-episodes` and not the screened-episode skip: 20 of the 32 round-2 runs pass with numbers indistinguishable from round 1's, `--max-episodes 20` runs appear in both groups, and the same checkpoint lands in both groups on different runs (D1000: label_tokens-5 OK, -32 MISMATCH). Round 1 ran 17 exports and drew a good one every time; round 2 ran 32 and drew 12 bad ones. With ~1/3 incidence, 17 clean draws in a row has probability ~0.001 — so round 1 was lucky, OR the incidence rose with today's parallelism (11 of the 12 mismatches came from tests that ran while other exports ran concurrently). Both readings say the same thing: **verify every export against the env policy before using it**, which `check` already does.
     **THE CHECK PREDICTS NON-REPRODUCIBILITY, 9 cases out of 9.** For the three checkpoints whose 20- and 60-episode runs BOTH had a verified export (D1500, Dlast, F2000), the 60-episode run's first 20 episodes are identical to the 20-episode run's, verdict for verdict. For all six checkpoints where either run mismatched (A0500, B0500, B1000, C1000, D1000, D0500), they are not. So the orchestrator's 20:15 rule is not just safe, it is the correct rule, and it is now enforced in code: `harness/lane_b/p8_ceiling.sh` refuses to report a ceiling number unless the labelling run printed `VERDICT: OK`.
     CEILING NUMBERS MEASURED ON AN UNVERIFIED EXPORT — kept in the record, marked unreliable, NOT used for selection: B0500 18/20, D0500 17/20, C0500 15/20, C1500 15/20, E0500 12/20, A1500 6/20, and the 60-episode runs D0500w60 48/60, C1000w60 40/60, B1000w60 34/60, B0500w60 34/60, D1000w60 34/60, A0500w60 13/60. (A0500's 18/20 and its 13/60 are the same checkpoint measured through a verified and an unverified export respectively — the clearest single illustration of what a bad export costs.)
+- 2026-09-04 21:09  bakeoff lane_b/label_tokens OK  rc=0  gpus=5  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-34
+- 2026-09-04 21:28  bakeoff lane_b/oracle_b OK  rc=0  gpus=1  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-33
+- 2026-09-04 21:36  bakeoff lane_b/oracle_b OK  rc=0  gpus=5  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-34
+- 2026-09-04 21:40  P8 RESULT (WP 8.4 — the one entry with every number).
+    **REFERENCE SET.** ~/runs/franka-sonic/lane_b/2026-09-04_motion_lib/out/motions = **1782 clips / 867 132 frames / 89.2 MB**: the 891 SCREENED P7 episodes (`replay_success` AND `jointpos_replay_success`) at 30 fps plus their 891 `_M` mirrors, no augmentations. Round 1: 1216 clips / 474 716 frames from 76 demos. Build cost 12 s on CPU; `MotionLibRobot` loads the directory on CPU and all six trainers logged "Loaded 1782 motion files" with no memory problem at 4096 or 8192 envs; per-iteration cost 1.22-1.28 s at 4096 and 1.70-1.75 s at 8192 (~7900 / ~5300 iterations in 4 h).
+    **WINNER.** `sonic_dual_fr3_jp24` (= P5's jp20 recipe on the round-2 library, nothing else changed), **8192 envs, seed 1, iteration 1500**, warm from `final/p5/jp20_last_it2848`:
+      checkpoint  ~/runs/franka-sonic/lane_b/2026-09-04_sonic_rl-4/out/TRL_DualFR3_Track/sonic_dual_fr3_jp24_rl-20260904_160154/model_step_001500.pt
+      export      ~/runs/franka-sonic/lane_b/2026-09-04_export_onnx-19  (verified against the env policy; byte-identical to export_onnx-16)
+      replay      ~/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-19 — **0.045 rad** mean joint error, whole-clip flange **L 0.8 cm / R 1.7 cm** (grasp-frame L 0.9 / R 1.5)
+      tokens      ~/runs/franka-sonic/lane_b/2026-09-04_label_tokens-34  (`[check] VERDICT: OK`)
+      B-oracle    ~/runs/franka-sonic/lane_b/2026-09-04_oracle_b-34 — **20/20, progress mean 1.000** (protocol run: 20 rollouts on the first 20 round-2 episodes, the winner's own 891-episode token set)
+      wider set   ~/runs/franka-sonic/lane_b/2026-09-04_oracle_b-19 — **51/60 = 85.0 %, progress mean 0.908** (Wilson 95 % CI 74-92 %)
+    **SELECTION on 60 episodes across the top three verified candidates** (orchestrator 18:25): D1500 **51/60** (85.0 %, progress 0.908) > Dlast 48/60 (80.0 %, 0.917) > F2000 47/60 (78.3 %, 0.825). D1500 also wins the note's tie-breaks outright — the earlier iteration (1500 vs ~5700) and the plainer recipe (jp24 = jp20 + the new library; jp27 changes a reward weight). Its 20-episode result reproduced three times (oracle_b-16 with the 20-episode labels, the first 20 rows of oracle_b-19 with the 60-episode labels, oracle_b-34 with the full 891-episode labels): 20/20 every time.
+    **FULL SERIES** — checkpoint -> replay rad -> whole-clip flange L/R cm -> B-oracle -> mean progress -> export verified? (32 ceiling tests; `w60` = the 60-episode set; UNVERIFIED = the labelling run's `check` reported MISMATCH, so the number is recorded but not used for selection):
+          A0500      jp24 4096 s0  0.049  L 1.1 / R 0.9  18/20  0.942  verified
+          A0500w60   jp24 4096 s0  0.049  L 1.1 / R 0.9  13/60  0.639  UNVERIFIED EXPORT
+          A1000      jp24 4096 s0  0.049  L 1.1 / R 0.9  14/20  0.875  verified
+          A1500      jp24 4096 s0  0.049  L 1.1 / R 1.0  6/20  0.692  UNVERIFIED EXPORT
+          A2000      jp24 4096 s0  0.047  L 1.1 / R 1.1  6/20  0.692  verified
+          B0500      jp24 4096 s1  0.051  L 1.1 / R 1.2  18/20  0.958  UNVERIFIED EXPORT
+          B0500w60   jp24 4096 s1  0.051  L 1.1 / R 1.2  34/60  0.739  UNVERIFIED EXPORT
+          B1000      jp24 4096 s1  0.048  L 1.1 / R 1.0  18/20  0.958  verified
+          B1000w60   jp24 4096 s1  0.048  L 1.1 / R 1.0  34/60  0.739  UNVERIFIED EXPORT
+          B1500      jp24 4096 s1  0.051  L 1.1 / R 1.1  16/20  0.908  verified
+          C0500      jp24 8192 s0  0.048  L 1.1 / R 1.1  15/20  0.867  UNVERIFIED EXPORT
+          C1000      jp24 8192 s0  0.045  L 0.9 / R 0.9  18/20  0.942  verified
+          C1000w60   jp24 8192 s0  0.045  L 0.9 / R 0.9  40/60  0.831  UNVERIFIED EXPORT
+          C1500      jp24 8192 s0  0.047  L 1.1 / R 0.8  15/20  0.867  UNVERIFIED EXPORT
+          C2000      jp24 8192 s0  0.047  L 0.9 / R 0.9  15/20  0.867  verified
+          D0500      jp24 8192 s1  0.049  L 1.3 / R 1.4  17/20  0.950  UNVERIFIED EXPORT
+          D0500w60   jp24 8192 s1  0.049  L 1.3 / R 1.4  48/60  0.917  UNVERIFIED EXPORT
+          D1000      jp24 8192 s1  0.049  L 0.8 / R 1.1  17/20  0.950  verified
+          D1000w60   jp24 8192 s1  0.049  L 0.8 / R 1.1  34/60  0.831  UNVERIFIED EXPORT
+          D1500      jp24 8192 s1  0.045  L 0.8 / R 1.7  20/20  1.000  verified
+          D1500w60   jp24 8192 s1  0.045  L 0.8 / R 1.7  51/60  0.908  verified
+          D2000      jp24 8192 s1  0.047  L 0.8 / R 1.2  8/20  0.775  verified
+          D2500      jp24 8192 s1  0.054  L 1.0 / R 1.3  6/20  0.642  verified
+          D3000      jp24 8192 s1  0.052  L 0.9 / R 0.8  10/20  0.833  verified
+          D3500      jp24 8192 s1  0.045  L 0.8 / R 1.2  13/20  0.883  verified
+          Dlast      jp24 8192 s1  0.044  L 0.7 / R 1.2  18/20  0.967  verified
+          Dlastw60   jp24 8192 s1  0.044  L 0.7 / R 1.2  48/60  0.917  verified
+          E0500      jp26 4096 s0  0.047  L 1.0 / R 1.0  12/20  0.842  UNVERIFIED EXPORT
+          E1000      jp26 4096 s0  0.047  L 1.1 / R 1.1  12/20  0.842  verified
+          F1000      jp27 8192 s0  0.046  L 1.3 / R 1.0  13/20  0.858  verified
+          F2000      jp27 8192 s0  0.046  L 0.8 / R 0.9  17/20  0.892  verified
+          F2000w60   jp27 8192 s0  0.046  L 0.8 / R 0.9  47/60  0.825  verified
+    **RELABELLED SET (WP 8.3).** ~/runs/franka-sonic/lane_b/2026-09-04_label_tokens-34/out/gr00t_v2_sonic = **891 episodes / 722 576 frames / 2673 videos / 1.9 GB**, action 66 = [motion_token 64 | left_grip | right_grip], fps 50, exactly lane A's ~/runs/franka-sonic/shared/2026-09-04_dataset-2/out/gr00t_v2 episode set (the gate checks equality). `encode`: |token| max 1.0000 (bound 1.25), distance from the 1/16 FSQ grid 0.0. Cost 10 min end to end, not the ~50 min budgeted (obs 891 clips 57.5 s, encode ~90 s, dataset ~6 min). An earlier full relabel with a different checkpoint's encoder is kept at ~/runs/franka-sonic/lane_b/2026-09-04_label_tokens (the 16:39 securing pass) — superseded, not stale.
+    **FINALS.** ~/runs/franka-sonic/lane_b/final/p8/jp24_D_it1500/ (109 MB: onnx pair + g1 pair + export_summary + model_config, replay json + trajectories, token index/hold token/summary/validation, the 20-rollout oracle eval, train_config.yaml, train_summary.json). The `.pt` checkpoints stay in the sonic_rl-4 run folder; nothing deleted anywhere.
+    **WHAT P8 CHANGES FOR P9/P10.** (1) Lane B's decoder is stronger than round 1's on harder data: 85 % on 60 round-2 episodes (+/-9 cm spawns) against round 1's 19/20 on 20 easier +/-6 cm episodes — and round 1's 19/20 was itself the maximum of seventeen ceiling tests, so the 60-episode number is the first decoder figure in this project that is not a selected maximum. (2) **Train longer is not a lever**: the ceiling peaks at iteration 500-1500 and decays (D: 17 -> 17 -> 20 -> 8 -> 6 -> 10 -> 13 -> 18 over 500..last; A: 18 -> 14 -> 6), while replay error stays flat at 0.044-0.054 rad throughout and ranks nothing. (3) **Both reward knobs hurt** (jp26 12/20, jp27 13/20 at iteration 1000 vs jp24's 17-18/20); the untouched P5 recipe on more data is the answer. (4) **`export_onnx` must be verified before use** — see the 21:05 entry; P9's eval and P10's oracle rows should each confirm `[check] VERDICT: OK` (or re-export) before they are believed.
+    GPU-hours P8: 6 variants x 4.0 h = 24.0 GPU-h training, plus ~5.5 GPU-h of ceiling/confirmation tests = ~29.5 GPU-h. All artifacts on home (~/runs); nothing on /tmp except launcher scratch. Home 2495 GB free (floor 600). NEEDS-COPY: none. No GPU claims held.
+    NEEDS-CLEANUP: /tmp/franka-sonic/lane_b/p8/ (launcher scripts, per-test logs, series.txt, the diagnosis scripts check_survey.py / join_check_ceiling.py / compare_first20.py / env_dump_diff.py / onnx_initializer_diff.py / compare_exports.py / final_series.py, and recheck32_{1,2}.json — instance-local, not persistent); ~/runs/franka-sonic/lane_b/2026-09-04_label_tokens (the 16:39 securing relabel, superseded by label_tokens-34); the 12 export/label/oracle run folders listed as UNVERIFIED above (kept per rule o, marked unreliable).
