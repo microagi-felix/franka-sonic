@@ -565,3 +565,36 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
 - 2026-09-04 17:21  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-9
 - 2026-09-04 17:21  bakeoff lane_b/label_tokens OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-9
 - 2026-09-04 17:22  bakeoff lane_b/label_tokens OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-10
+- 2026-09-04 17:33  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-9
+- 2026-09-04 17:34  bakeoff lane_b/export_onnx OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-10
+- 2026-09-04 17:35  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-10
+- 2026-09-04 17:35  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-8
+- 2026-09-04 17:36  bakeoff lane_b/label_tokens OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-11
+- 2026-09-04 17:44  bakeoff lane_b/export_onnx OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-11
+- 2026-09-04 17:45  bakeoff lane_b/decoder_replay OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-11
+- 2026-09-04 17:45  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-10
+- 2026-09-04 17:46  bakeoff lane_b/label_tokens FAILED  rc=1  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-12
+- 2026-09-04 17:52  bakeoff lane_b/export_onnx OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-12
+- 2026-09-04 17:53  bakeoff lane_b/decoder_replay OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-12
+- 2026-09-04 17:54  bakeoff lane_b/label_tokens FAILED  rc=1  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-13
+- 2026-09-04 17:55  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-11
+- 2026-09-04 17:56  bakeoff lane_b/export_onnx OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-13
+- 2026-09-04 17:57  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-13
+- 2026-09-04 17:58  bakeoff lane_b/label_tokens FAILED  rc=1  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-14
+- 2026-09-04 18:04  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-12
+- 2026-09-04 18:05  bakeoff lane_b/export_onnx OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-14
+- 2026-09-04 18:05  bakeoff lane_b/decoder_replay OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-14
+- 2026-09-04 18:07  bakeoff lane_b/label_tokens FAILED  rc=1  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-15
+- 2026-09-04 18:08  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-13
+- 2026-09-04 18:09  bakeoff lane_b/export_onnx OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-15
+- 2026-09-04 18:10  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-15
+- 2026-09-04 18:11  bakeoff lane_b/label_tokens FAILED  rc=1  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-16
+- 2026-09-04 18:20  P8 WP 8.2 SERIES (continued). checkpoint -> replay rad -> whole-clip flange L/R cm -> B-oracle N/20 -> mean progress, all on the same first 20 round-2 episodes:
+      A2000  jp24 4096 s0  it 2000  0.047  L 1.1 / R 1.1   6/20  0.692
+      F2000  jp27 8192     it 2000  0.046  L 0.8 / R 0.9  17/20  0.892
+      B0500  jp24 4096 s1  it 500   0.051  L 1.1 / R 1.2  **18/20**  0.958
+      D0500  jp24 8192 s1  it 500   0.049  L 1.3 / R 1.4  17/20  0.950
+      C0500  jp24 8192 s0  it 500   0.048  L 1.1 / R 1.1  15/20  0.867
+    Leaders after 11 tests: **B0500 and B1000 (both 18/20, progress 0.958)**, then A0500 and C1000 (18/20, 0.942). Four different checkpoints have now reached the prompt's >= 18/20 stopping value and every jp24 checkpoint tested at iteration <= 1000 is at or above the 15/20 gate floor.
+    THE SERIES' OWN FINDING: **the B-oracle is not monotone in PPO iterations, and it is not predicted by replay error.** Variant A goes 18/20 (it 500) -> 14/20 (1000) -> 6/20 (2000) while its replay error sits at 0.047-0.049 rad throughout and its flange error never moves (1.1 cm); variant F goes the other way, 13/20 (1000) -> 17/20 (2000). Across all 13 tests the replay error spans 0.045-0.051 rad and correlates with nothing (the best replay, C1000's 0.045, is an 18/20; the worst, B0500's 0.051, is also an 18/20). This is round 1's finding reproduced on 13 checkpoints instead of 3, and it is the reason the phase selects on the 20-rollout test alone. Consequence recorded for P9/P10: a lane-B decoder must be chosen by a rollout test, never by a tracking metric, and "train longer" is not a lever here — the warm-started policy is at its ceiling within ~500-1000 iterations of the round-2 library.
+    METHOD CAVEAT recorded honestly: picking the maximum of ~15-20 checkpoints on ONE 20-episode test set biases that maximum upward (a decoder whose true success is ~85 % will show 18-19/20 on some checkpoint by chance). The winner is therefore re-run on a WIDER 60-episode set before it is declared, and the protocol-identical 20-rollout run is done last so the gate reads the phase's stated bar.
