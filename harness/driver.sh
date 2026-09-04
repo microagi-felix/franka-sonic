@@ -5,7 +5,9 @@
 #       'bash harness/driver.sh 2>&1 | tee -a ~/runs/franka-sonic/driver/driver.log'
 #   tmux kill-window -t bakeoff:driver        # stop it
 #
-# For each phase P0..P6 it (P5/P6 added 2026-09-03: decoder ceiling fix, lane B redo):
+# For each phase P0..P10 it (P5/P6 added 2026-09-03: decoder ceiling fix, lane B
+# redo; P7..P10 added 2026-09-04: round 2 — more data, longer training, the real
+# 100-rollout comparison):
 #   1. skips the phase if plan/STATUS.md already says `GATE PN: PASS`;
 #   2. exits 2 if the last stop marker after the previous phase's PASS is a
 #      `BLOCKED:` line (a human then appends `DRIVER: resume` to clear it);
@@ -17,7 +19,7 @@
 #      each; if an attempt leaves no PASS marker but harness/gates/pN.sh exits
 #      0, the driver records the PASS itself (gates decide phases, not prose).
 #
-# After P4: `DRIVER: all phases passed` into STATUS.md, push, exit 0.
+# After the last phase: `DRIVER: all phases passed` into STATUS.md, push, exit 0.
 # After 3 failed attempts on a phase: `BLOCKED: driver gave up on PN`, push,
 # exit 2.
 #
@@ -35,13 +37,18 @@ DRIVER_RUNS="$HOME/runs/franka-sonic/driver"
 LOGDIR="$DRIVER_RUNS/$(date +%F)"
 
 CLAUDE="${DRIVER_CLAUDE:-$HOME/.local/bin/claude}"
-EFFORT="${DRIVER_EFFORT:-xhigh}"          # Felix: xhigh explicitly, never inherited
+# Felix, 2026-09-04 for round 2 ("use opus 5 max"): both explicit on the command
+# line, never inherited from settings.json — the attempt log records them verbatim.
+MODEL="${DRIVER_MODEL:-claude-opus-5}"
+EFFORT="${DRIVER_EFFORT:-max}"
 ATTEMPTS="${DRIVER_ATTEMPTS:-3}"
-PHASE_TIMEOUT="${DRIVER_PHASE_TIMEOUT:-6h}"
+# Round-2 phases run multi-hour background jobs (MimicGen generation, 20k-step
+# fine-tunes); 6 h cut attempts mid-stage in round 1.
+PHASE_TIMEOUT="${DRIVER_PHASE_TIMEOUT:-8h}"
 P0_WAIT_POLLS="${DRIVER_P0_WAIT_POLLS:-240}"   # 240 × 60 s = 4 h
 P0_POLL_SECONDS="${DRIVER_P0_POLL_SECONDS:-60}"
 GR00T_PY="$HOME/Isaac-GR00T/.venv/bin/python"
-PHASES="P0 P1 P2 P3 P4 P5 P6"
+PHASES="P0 P1 P2 P3 P4 P5 P6 P7 P8 P9 P10"
 
 mkdir -p "$LOGDIR" || exit 1
 
@@ -76,7 +83,7 @@ last_marker() {           # $1 = previous phase or ""
   fi
   tail -n "+$start" "$STATUS" \
     | grep -E '^[[:space:]]*-[[:space:]]' \
-    | grep -oE "GATE P[0-6]: PASS|BLOCKED:|DRIVER: resume" | tail -1
+    | grep -oE "GATE P[0-9]+: PASS|BLOCKED:|DRIVER: resume" | tail -1
 }
 
 is_blocked() {            # $1 = previous phase or ""
@@ -147,12 +154,13 @@ run_attempt() {           # $1 = phase, $2 = attempt no, $3 = log file
 
   # The effective command line, verbatim, so the effort level can be verified
   # later (Felix: xhigh must be explicit, not inherited from settings.json).
-  echo "=== command: timeout -k 120 $PHASE_TIMEOUT $CLAUDE -p --dangerously-skip-permissions --effort $EFFORT --output-format text \"\$(cat $prompt_file)\"" >> "$logf"
+  echo "=== command: timeout -k 120 $PHASE_TIMEOUT $CLAUDE -p --dangerously-skip-permissions --model $MODEL --effort $EFFORT --output-format text \"\$(cat $prompt_file)\"" >> "$logf"
   echo "==============================================================" >> "$logf"
 
   timeout -k 120 "$PHASE_TIMEOUT" \
     "$CLAUDE" -p \
       --dangerously-skip-permissions \
+      --model "$MODEL" \
       --effort "$EFFORT" \
       --output-format text \
       "$(cat "$prompt_file")" >> "$logf" 2>&1
@@ -188,7 +196,7 @@ run_phase() {             # $1 = phase, $2 = previous phase or ""
 
   for k in $(seq 1 "$ATTEMPTS"); do
     logf="$LOGDIR/$phase-attempt-$k.log"
-    log "$phase attempt $k/$ATTEMPTS (timeout $PHASE_TIMEOUT, effort $EFFORT) -> $logf"
+    log "$phase attempt $k/$ATTEMPTS (timeout $PHASE_TIMEOUT, model $MODEL, effort $EFFORT) -> $logf"
     run_attempt "$phase" "$k" "$logf"
     rc=$?
     log "$phase attempt $k finished rc=$rc"
@@ -223,13 +231,13 @@ run_phase() {             # $1 = phase, $2 = previous phase or ""
 # --------------------------------------------------------------------- main
 trap 'log "driver exiting"' EXIT
 
-log "start pid=$$ repo=$REPO_ROOT claude=$CLAUDE effort=$EFFORT attempts=$ATTEMPTS timeout=$PHASE_TIMEOUT"
+log "start pid=$$ repo=$REPO_ROOT claude=$CLAUDE model=$MODEL effort=$EFFORT attempts=$ATTEMPTS timeout=$PHASE_TIMEOUT"
 log "logs in $LOGDIR"
 if [ ! -x "$CLAUDE" ]; then
   log "FATAL: $CLAUDE is not executable"
   exit 1
 fi
-status_append "DRIVER: start (pid $$, effort $EFFORT, logs $LOGDIR)"
+status_append "DRIVER: start (pid $$, model $MODEL, effort $EFFORT, logs $LOGDIR)"
 push_status "driver: start"
 
 prev=""

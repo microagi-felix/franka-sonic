@@ -228,13 +228,62 @@ WP 1.0) — the p1 gate's dataset check is what enforces it.
 - [ ] scale-up deltas list: what the real run needs (demo count, full retarget,
       4096 envs × 8 GPUs, 20 000 fine-tune steps)
 
+## Round 2 — P7…P10 (2026-09-04): the scale-up P4 asked for
+
+Round 1 (P0–P6) ended with lane A 0/20, lane B 1/20, A-oracle 20/20, B-oracle
+19/20 on 76 episodes and a 2000-step fine-tune: a working pipeline and two
+starved policies. Round 2 does what P4's own scale-up list names — more
+episodes, a wider spawn distribution, 20 000 fine-tune steps, then a comparison
+big enough to read. **Both lanes get the identical dataset, budget, stopping
+rule and evaluation; only the action interface differs.**
+
+### P7 — round-2 demo set — GATE `harness/gates/p7.sh`
+
+- [ ] `stage_demos` parameterised: `--n-sources --n-generated --n-procs --n-shards`
+      (defaults unchanged, so round-1 commands still reproduce)
+- [ ] generation distribution widened to cover the evaluation range with margin
+      (±9 cm / ±0.75 rad target); the evaluation env/binding/seeds untouched
+- [ ] ~1000 replay-valid episodes exported (gate floor 600), `out/coverage.json`
+      records the measured spawn distribution vs the evaluation range
+- [ ] `shared/*_dataset*/out/gr00t_v2` rebuilt from them; 5 random episodes
+      replay to `handover_success=True`
+
+### P8 — SONIC decoder on the round-2 data — GATE `harness/gates/p8.sh`
+
+- [ ] motion library rebuilt from the new export (+ mirrors)
+- [ ] `sonic_dual_fr3_jp24` = P5's winning `jp20` recipe on the new references,
+      warm from `final/p5/jp20_last_it2848`, lane-A plant (gravity off)
+- [ ] ceiling tests every 500 iterations decide the winner (`decoder_replay` does
+      not rank decoders — P5 finding); **B-oracle ≥ 15/20** required
+- [ ] the whole episode set relabelled into `out/gr00t_v2_sonic`, episode count
+      equal to lane A's dataset
+
+### P9 — both policies, trained long, stopped on evidence — GATE `harness/gates/p9.sh`
+
+- [ ] `_finetune_cmd` parameterised: `--train-steps --save-steps
+      --save-total-limit` (`--max-steps` stays the evaluation horizon)
+- [ ] both lanes fine-tuned in parallel, 3 GPUs each, 20 000 steps, checkpoint
+      every 2500, every checkpoint kept
+- [ ] every checkpoint screened with 20 rollouts on the 2 spare GPUs
+- [ ] stopping rule applied (two consecutive checkpoints failing to beat the
+      lane's best, from the 4th onward) and a winner named per lane as
+      `P9 BEST lane_x=<checkpoint path>` in STATUS.md
+
+### P10 — the real comparison — GATE `harness/gates/p10.sh`
+
+- [ ] 100 rollouts per row: lane A, lane B, A-oracle, B-oracle, same seeds
+- [ ] `plan/REPORT.md` regenerated with the P9 learning curves, exact 95 %
+      intervals at n = 100 and an explicit overlap statement
+- [ ] verdict written honestly, including what n = 100 does not separate
+
 ## Autonomous driver
 
 `harness/driver.sh` runs the phases unattended in tmux window `bakeoff:driver`:
 for each phase it checks `plan/STATUS.md` for `GATE PN: PASS`, and otherwise
-runs `claude -p --dangerously-skip-permissions --effort xhigh` on
-`plan/prompts/PN.md` (fresh context per attempt, up to 3 attempts, `timeout 6h`
-each). It stops at the first `BLOCKED:`. See README.md for start/stop and the
+runs `claude -p --dangerously-skip-permissions --model claude-opus-5 --effort max`
+on `plan/prompts/PN.md` (fresh context per attempt, up to 3 attempts, `timeout 8h`
+each; model and effort from Felix, 2026-09-04, overridable with `DRIVER_MODEL` /
+`DRIVER_EFFORT` / `DRIVER_PHASE_TIMEOUT`). It stops at the first `BLOCKED:`. See README.md for start/stop and the
 `DRIVER: resume` escape hatch.
 
 ## Work-package parallelism (8 GPUs)
