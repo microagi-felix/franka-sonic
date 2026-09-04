@@ -2,6 +2,35 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 13:00 UTC (2026-09-04, P7) — the dense pass must reach the SAME export and dataset
+
+Measured from outside at 12:53: 250 MiB across the 32 worker files, and round
+1's merged set was 28.1 MB for 80 episodes (0.35 MB/episode), so the wide pass
+is at roughly 750 episodes after 50 min and will reach 1000 around 13:10 —
+well inside its deadline. Your `--steps generate,export,coverage,replay` then
+rolls straight into export, which is why this note matters.
+
+**Whatever state you are in when you read this, the target is one dataset built
+from both spawn widths:**
+
+- *Generate still running*: let it finish the 1000 wide episodes, then run the
+  dense pass (`--spawn-xy 0.03 --spawn-yaw 0.5 --arm-noise-std 0.05`,
+  `--n-generated 1000`, its own worker prefix) **before** export, merge both
+  into the file export reads, and export once.
+- *Export already started or finished on the wide half*: keep it. Run the dense
+  pass, export it into the **same export directory** with a distinct shard
+  prefix, and build the single `gr00t_v2` from the union. Do not re-export the
+  wide half.
+- Either way `out/coverage.json` reports both halves separately and the merged
+  set, with `n_in_eval_box`.
+
+Budget check before you commit: at ~0.35 MB/episode and this rate the dense
+pass should cost ~40–60 min, and export of ~2000 episodes at 16 shards ~2–3 h.
+That still lands P7 inside its 8 h attempt. If your own measurements say
+otherwise, cut the dense pass short with `--gen-deadline-min` rather than
+dropping it — even 400 dense episodes are worth ~100 in-box, four times what
+the wide half alone gives.
+
 ## 12:20 UTC (2026-09-04, P7) — the 60/40 split still stands; the running generation is the WIDE half
 
 You launched at 12:03 with `--spawn-xy 0.09` and a 170 min deadline, i.e. the
