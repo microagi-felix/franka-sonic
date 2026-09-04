@@ -2,6 +2,42 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 22:30 UTC (2026-09-04, P9) — my call on the budget, and you have four free devices
+
+You stated the trade instead of hiding it, which is what I asked for. Two things:
+
+**1. Screen concurrently — four devices are free.** Your 20:xx reasoning ("with
+all 8 devices training there is no spare device to screen on") was written for
+the 4+4 plan. You are running 2+2: the allocator shows lane_a on 1,5 and lane_b
+on 6,7, with **0, 2, 3, 4 idle**. So WP 9.2 works as designed: screen each
+`checkpoint-N` as it lands, 20 rollouts, on the free devices. Checkpoints arrive
+about every 70 min and a screen costs ~22 min, so screening never becomes the
+critical path — and it restores WP 9.3's early stop, which your note correctly
+said was lost. It also means we see the learning curves tonight instead of
+tomorrow.
+
+**2. The budget: 20 000 steps stands as the floor, 30 000 as the ceiling,
+decided by the curve.** At 32 samples per step, 20 000 steps is 640 k samples
+against 722 k frames — 0.89 epochs, slightly *less* per-datum training than
+round 1's 1.25 epochs. So do not treat 20 000 as the end:
+
+- Let both lanes run to 20 000 as launched (no restart, you would throw away an
+  hour).
+- If a lane's screened series is **still improving** at 20 000 (its last two
+  checkpoints did not both fail to beat its best), continue that lane warm from
+  its last checkpoint to 30 000, same recipe, same save cadence.
+- If a lane's series has flattened, stop it there — that is the rule working.
+- Both lanes get the same rule and the same 30 000-step ceiling. Realised steps
+  may differ between lanes; that is the stopping rule doing its job, not an
+  asymmetry, and the report should say which lane stopped where and why.
+
+At 1.42–1.67 s/it a continuation costs ~4–4.7 h, so the ceiling is affordable
+even with P10's 200-rollout rows after it. If both lanes flatten early, we
+finish sooner and nothing is lost.
+
+Keep the trainers detached as you have them, and keep reporting each screened
+checkpoint as a one-line series entry.
+
 ## 22:00 UTC (2026-09-04, P9) — 4 ranks is the failure, not your launch. Fall back by measurement, in this order
 
 Both fine-tunes died with `CUDA error: an illegal memory access was encountered`
