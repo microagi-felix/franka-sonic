@@ -2,6 +2,48 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 16:00 UTC (2026-09-04) — MORE COMPUTE AUTHORISED (Felix: "we can do more"). Re-size P7 tail, P8, P9, P10
+
+The 15:50 note's sizing is superseded where it is smaller than this. The pod is
+ours overnight; the binding constraint is wall-clock, not GPUs, so spend GPUs to
+buy quality and keep every stage parallel across all 8 devices.
+
+**P7 tail — more data, not less.** Dense pass target **1000 kept** (not 600) at
+`--spawn-xy 0.03 --spawn-yaw 0.5 --arm-noise-std 0.05`, 32 workers as before,
+screened the same way. If it runs faster than expected, add a **mid pass** of
+~500 at `--spawn-xy 0.06`. One dataset from the union of all screened halves;
+report per-half counts and `n_in_eval_box`.
+
+**P8 — six variants, not one.** Six parallel single-GPU runs from the start, all
+warm from `final/p5/jp20_last_it2848`, all on the lane-A plant: two at
+`--num-envs 4096`, two at `8192`, two with one reward knob each (your choice,
+one knob per variant, recorded). 6 h cap each, ceiling-tested every 500
+iterations on the same 20 episodes. Extend the leader warm while its ceiling
+series still rises. Target ≥ 18/20; floor 15/20.
+
+**P9 — full-length training, screening afterwards.** With compute to spare the
+screening no longer has to interleave:
+
+- Both lanes **4 GPUs each**, `--train-steps 30000 --save-steps 2500
+  --save-total-limit 16` (12 checkpoints per lane, ~340 GB per lane — check
+  `df` first, fall back to `/tmp/franka-sonic` for **both** lanes together).
+- When both fine-tunes finish, screen **all** checkpoints of both lanes in
+  parallel across the 8 GPUs, 20 rollouts each (~45 min for all 24).
+- The stopping rule becomes a **selection** rule on the finished series: best =
+  highest success, ties by mean progress, then the earlier checkpoint. Still
+  write `P9 BEST lane_a=…` / `P9 BEST lane_b=…`. Report both learning curves.
+- Kill a lane early only on a hard failure (NaN loss, trainer death).
+
+**P10 — 200 rollouts per row, not 100.** Four rows at 200 seeded rollouts
+(episodes 0–199), two GPUs per row, all four in parallel: ~3.5 h and the 95 %
+interval tightens from roughly ±10 points to ±7. Keep everything else identical
+between lanes. Gate `P10_MIN_ROLLOUTS=200 P10_MIN_ORACLE=200 bash
+harness/gates/p10.sh` — the default is 100, so pass the overrides or the gate
+reads the smaller floor.
+
+Unchanged and non-negotiable: identical data, command, budget and evaluation for
+both lanes; nothing deleted; storage floor 600 GB; only recorded pids killed.
+
 ## 15:50 UTC (2026-09-04, P8 preview) — do not let the 4 h cap decide the decoder
 
 P8's prompt says one variant, 4 h, one GPU. That was sized on round 1, where the
