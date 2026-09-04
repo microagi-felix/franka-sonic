@@ -458,3 +458,4 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
 - 2026-09-04 00:35  GATE P6: PASS (0 warnings)
     `bash harness/gates/p6.sh` at 00:33 UTC, rc=0: PASS P5 B-oracle present (oracle_b-19), PASS lane B checkpoint-2000 (P6) (~/runs/franka-sonic/lane_b/2026-09-03_finetune/out/checkpoints/checkpoint-2000), PASS lane B eval >= 20 episodes (P6) (20 rows, ~/runs/franka-sonic/lane_b/2026-09-04_eval/out/eval/eval_results.csv), PASS lane B eval newer than the P5 oracle, PASS plan/REPORT.md regenerated (00:33).
     Result table: lane A 0/20 (progress 0.042) | A-oracle 20/20 (1.000) | lane B 1/20 (0.425) | B-oracle 19/20 (0.958) — see plan/REPORT.md. P6 ends here; there is no P7.
+- 2026-09-04 00:34  DRIVER: all phases passed
