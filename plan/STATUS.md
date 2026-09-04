@@ -598,3 +598,41 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
     Leaders after 11 tests: **B0500 and B1000 (both 18/20, progress 0.958)**, then A0500 and C1000 (18/20, 0.942). Four different checkpoints have now reached the prompt's >= 18/20 stopping value and every jp24 checkpoint tested at iteration <= 1000 is at or above the 15/20 gate floor.
     THE SERIES' OWN FINDING: **the B-oracle is not monotone in PPO iterations, and it is not predicted by replay error.** Variant A goes 18/20 (it 500) -> 14/20 (1000) -> 6/20 (2000) while its replay error sits at 0.047-0.049 rad throughout and its flange error never moves (1.1 cm); variant F goes the other way, 13/20 (1000) -> 17/20 (2000). Across all 13 tests the replay error spans 0.045-0.051 rad and correlates with nothing (the best replay, C1000's 0.045, is an 18/20; the worst, B0500's 0.051, is also an 18/20). This is round 1's finding reproduced on 13 checkpoints instead of 3, and it is the reason the phase selects on the 20-rollout test alone. Consequence recorded for P9/P10: a lane-B decoder must be chosen by a rollout test, never by a tracking metric, and "train longer" is not a lever here — the warm-started policy is at its ceiling within ~500-1000 iterations of the round-2 library.
     METHOD CAVEAT recorded honestly: picking the maximum of ~15-20 checkpoints on ONE 20-episode test set biases that maximum upward (a decoder whose true success is ~85 % will show 18-19/20 on some checkpoint by chance). The winner is therefore re-run on a WIDER 60-episode set before it is declared, and the protocol-identical 20-rollout run is done last so the gate reads the phase's stated bar.
+- 2026-09-04 18:17  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-14
+- 2026-09-04 18:18  bakeoff lane_b/export_onnx OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-16
+- 2026-09-04 18:19  bakeoff lane_b/decoder_replay OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-16
+- 2026-09-04 18:20  bakeoff lane_b/label_tokens OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-17
+- 2026-09-04 18:25  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-15
+- 2026-09-04 18:26  bakeoff lane_b/export_onnx OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-17
+- 2026-09-04 18:27  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-17
+- 2026-09-04 18:28  bakeoff lane_b/label_tokens OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-18
+- 2026-09-04 18:28  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-16
+- 2026-09-04 18:29  bakeoff lane_b/export_onnx OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-18
+- 2026-09-04 18:30  bakeoff lane_b/decoder_replay OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-18
+- 2026-09-04 18:31  bakeoff lane_b/label_tokens FAILED  rc=1  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-19
+- 2026-09-04 18:38  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-17
+- 2026-09-04 18:39  bakeoff lane_b/export_onnx OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-19
+- 2026-09-04 18:40  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-19
+- 2026-09-04 18:41  bakeoff lane_b/label_tokens OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-20
+- 2026-09-04 18:43  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-18
+- 2026-09-04 18:44  bakeoff lane_b/export_onnx OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-20
+- 2026-09-04 18:44  bakeoff lane_b/decoder_replay OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-20
+- 2026-09-04 18:45  bakeoff lane_b/label_tokens OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-21
+- 2026-09-04 18:59  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-20
+- 2026-09-04 19:00  bakeoff lane_b/export_onnx OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx-21
+- 2026-09-04 19:01  bakeoff lane_b/decoder_replay OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay-21
+- 2026-09-04 19:02  bakeoff lane_b/label_tokens OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-22
+- 2026-09-04 19:10  bakeoff lane_b/oracle_b OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-19
+- 2026-09-04 19:16  bakeoff lane_b/oracle_b OK  rc=0  gpus=2  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_oracle_b-21
+- 2026-09-04 19:20  P8 WP 8.2 — WINNER CANDIDATE FOUND, and confirmed on a wider set. Series additions:
+      A1500  jp24 4096 s0  it 1500  0.049  L 1.1 / R 1.0   6/20  0.692
+      B1500  jp24 4096 s1  it 1500  0.051  L 1.1 / R 1.1  16/20  0.908
+      C1500  jp24 8192 s0  it 1500  0.047  L 1.1 / R 0.8  15/20  0.867
+      E0500  jp26 4096     it 500   0.047  L 1.0 / R 1.0  12/20  0.842
+      D2000  jp24 8192 s1  it 2000  0.047  L 0.8 / R 1.2   8/20  0.775
+      **D1500  jp24 8192 seed 1  it 1500  0.045  L 0.8 / R 1.7  20/20  1.000**
+    D1500 = ~/runs/franka-sonic/lane_b/2026-09-04_sonic_rl-4/out/TRL_DualFR3_Track/sonic_dual_fr3_jp24_rl-20260904_160154/model_step_001500.pt (export_onnx-16, decoder_replay-16, label_tokens-17, oracle_b-16).
+    WIDE CONFIRMATION (60 episodes instead of 20, `P8_N_EPISODES=60 p8_ceiling.sh`, export_onnx-19 / label_tokens-20 / **oracle_b-19**): **51/60 = 85 % successes, progress mean 0.908**, and episodes 0-19 come back 1.000 each — bit-for-bit the same verdicts as the 20-episode run. Two things follow. (1) **The B-oracle is deterministic**: the same checkpoint, tokens and episode set reproduce exactly (round 1's three exact reproductions, now on 60 episodes). (2) **The 20/20 was partly the luck of that slice**: D1500's true ceiling on this data is ~85 % (Wilson 95 % CI 74-92 %), and all nine of its failures sit at episode index >= 20. This is the selection bias the 18:20 caveat predicted, measured rather than assumed — the honest headline for lane B's round-2 ceiling is the 60-episode number.
+    Token labels verified identical between the 20-episode and 60-episode runs (episode 0/1/2 token arrays and grips max|diff| 0.0, hold token max|diff| 0.0), so `--max-episodes` narrows the work and changes nothing about the labels.
+    PROCESS NOTE (the P6 hazard, hit again): `ls -t` over lane_b/*oracle_b* picked an IN-FLIGHT run (oracle_b-21, another lane's D2500 test at 19/60 rows) and made D1500's wide run look like 6/19. Always read the run folder named in the test's own log, never the newest by mtime.
+    Now running: wide 60-episode confirmation of the runner-up B1000; ceiling lane q7 on D2500/D3000/D3500. At the 20:02 training caps the six devices free up and the remaining candidates (B0500, A0500, C1000, D1000) plus every variant's last.pt are confirmed in parallel.
