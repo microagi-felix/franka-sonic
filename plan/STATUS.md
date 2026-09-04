@@ -512,3 +512,6 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
     WP 8.3 pre-run RUNNING (CPU, --gpus 0, in parallel with training): the `obs` step of the FULL 891-episode relabel does not depend on the encoder, so it is being computed now and the winner's run resumes that folder with `--steps validate,encode,check,dataset`.
     NEEDS-CLEANUP: /tmp/franka-sonic/lane_b/p8/ (launcher scripts, launcher logs and pids for the six variants and the obs pre-run; instance-local, not persistent).
 - 2026-09-04 16:03  bakeoff lane_b/label_tokens OK  rc=0  gpus=none  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens
+- 2026-09-04 16:27  bakeoff lane_b/export_onnx OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_export_onnx
+- 2026-09-04 16:28  bakeoff lane_b/decoder_replay OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_decoder_replay
+- 2026-09-04 16:29  bakeoff lane_b/label_tokens OK  rc=0  gpus=3  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_label_tokens-2

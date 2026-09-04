@@ -195,12 +195,19 @@ class Run:
             day = _dt.date.today().isoformat()
             root, self.fallback = run_root()
             base = root / lane / f"{day}_{stage}"
+            # mkdir is the arbiter, not exists(): two stages launched in the same second used to
+            # compute the same suffix and one died on FileExistsError (P8, two ceiling-test lanes
+            # in parallel, 2026-09-04 16:26 UTC). The loser simply takes the next suffix.
             d, n = base, 1
-            while d.exists():
-                n += 1
-                d = Path(f"{base}-{n}")
+            while True:
+                try:
+                    d.mkdir(parents=True)
+                    break
+                except FileExistsError:
+                    n += 1
+                    d = Path(f"{base}-{n}")
             self.dir = d
-            (self.dir / "logs").mkdir(parents=True)
+            (self.dir / "logs").mkdir()
             (self.dir / "out").mkdir()
         self.log = self.dir / "logs" / "run.log"
         self.devices: str | None = None
