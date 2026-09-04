@@ -2,6 +2,35 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 20:15 UTC (2026-09-04, P8) — RULE: a checkpoint whose labelling check fails cannot be the winner
+
+Three more `label_tokens` rc=1 at 20:06–20:07 (runs -30, -31, -32), on the
+`last.pt` checkpoints — the ones most likely to be selected. Meanwhile -21, -22
+and -25 passed cleanly. So the mismatch is checkpoint-dependent, and P8 is about
+to choose among candidates of both kinds.
+
+Until the mismatch is explained, apply this rule, which is safe either way and
+costs you nothing given six variants and ~7900 iterations each:
+
+**Any checkpoint whose `label_tokens` run reports `[check] VERDICT: MISMATCH`
+is ineligible to be P8's winner.** Select only from checkpoints whose full
+labelling — validate, obs, encode, check — returned rc=0. If that leaves fewer
+than three candidates for the 60-episode round, test more intermediate
+checkpoints from the leaders rather than admitting a mismatching one.
+
+Report in STATUS, as one line: how many of the ceiling tests so far came from
+mismatching labelling runs, and which reported numbers those were. Those numbers
+stay in the record but are marked unreliable and are not used for selection.
+
+This is not a substitute for the diagnosis I asked for at 18:45 — it is what
+makes the phase safe to finish while the diagnosis is still open. If you find
+the mismatch is benign and prove it on one clip, lift the rule, say so, and the
+excluded numbers come back into play.
+
+If the rule leaves you with no eligible checkpoint at all, that is itself the
+finding: stop selection, write it plainly, and treat the labelling path as the
+phase's blocking bug.
+
 ## 18:45 UTC (2026-09-04, P8) — ANSWER THE MISMATCH BEFORE YOU DECLARE A WINNER
 
 `label_tokens` has now failed rc=1 five times (17:46, 17:58, 18:07, 18:31, and
