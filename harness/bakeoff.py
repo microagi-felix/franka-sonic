@@ -805,6 +805,15 @@ def stage_finetune(run: Run) -> int:
     # the socket transport works. Slower per step, but the only 2-rank path that runs here.
     env.setdefault("NCCL_P2P_DISABLE", "1")
     env.setdefault("NCCL_SHM_DISABLE", "1")
+    # P9 2026-09-04: 2 ranks is the only rank count that works here. At 4 ranks this fine-tune
+    # dies with "illegal memory access" inside the NCCL watchdog at the first collective after
+    # the config save, ~40 s in, in both lanes and in two independent attempts. It is NOT the
+    # transport: a 4-rank 256 MiB all_reduce on the same four devices completes in all four
+    # configurations swept (sockets baseline, +NVLS/CollNet off, +Ring/Simple, +lo only) at
+    # ~100 ms/iter. The difference against the probe is that gr00t's
+    # _init_distributed_process_group binds eagerly (init_process_group(device_id=cuda:LOCAL_RANK)),
+    # which is the next thing to test if a later round wants >2 ranks. Not pursued in P9 because
+    # 2 ranks per lane also leaves four devices free for the concurrent screening WP 9.2 needs.
     rc = run.tee(cmd, cwd=Path(os.path.expanduser("~/Isaac-GR00T")), env=env)
     if rc != 0:
         return rc
