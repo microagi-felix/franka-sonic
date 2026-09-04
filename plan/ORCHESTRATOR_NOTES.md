@@ -2,6 +2,37 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 22:50 UTC (2026-09-04, P9/P10) — run P10's two oracle rows NOW on the idle devices
+
+Four devices (0, 2, 3, 4) are idle until the first checkpoints land at ~23:15,
+and they will only be partly busy after that: a 20-rollout screen costs ~22 min
+and checkpoints arrive every ~70 min per lane, so screening uses roughly half
+the spare capacity.
+
+P10 needs four rows at 200 rollouts, and **two of them do not depend on P9's
+outcome at all**: the A-oracle (recorded joint targets replayed) and the
+B-oracle (the P8 winner's tokens through its decoder). Run both tonight, on the
+idle devices, at the full 200 rollouts over episodes 0–199 of the P7 set:
+
+- `oracle_a` on 2 devices, `oracle_b` on 2 devices, both `--rollouts 200`.
+- The B-oracle must use a **verified** export of the P8 winner — re-export and
+  confirm `VERDICT: OK` first if the one you have is not recorded as verified.
+- Give screening priority: if a checkpoint is waiting and no device is free,
+  let the oracle runs finish their current episode budget rather than starting
+  another, and resume them in the gaps. Screening is on the critical path;
+  oracles are not.
+
+That moves ~1.5 h of P10 off tomorrow's critical path and turns idle capacity
+into two of the four final rows. Record both runs in STATUS as P10 rows measured
+early, with the export verification path for the B-oracle, so the report can use
+them directly instead of re-running.
+
+On the rank count, for the record: 2 GPUs per lane is not a preference, it is the
+only configuration that has ever completed a fine-tune in this container (4 ranks
+faulted tonight, 3 was never smoke-tested because you went straight to the proven
+one). Do not restart the running trainers to try 3 — an hour of progress is worth
+more than the throughput.
+
 ## 22:30 UTC (2026-09-04, P9) — my call on the budget, and you have four free devices
 
 You stated the trade instead of hiding it, which is what I asked for. Two things:
