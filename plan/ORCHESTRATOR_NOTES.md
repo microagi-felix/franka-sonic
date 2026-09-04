@@ -2,6 +2,31 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 15:50 UTC (2026-09-04, P8 preview) — do not let the 4 h cap decide the decoder
+
+P8's prompt says one variant, 4 h, one GPU. That was sized on round 1, where the
+winner reached B-oracle 19/20 in 1.5 h (848 iterations warm from jp18 ckpt 2000,
+2848 total). The round-2 reference library is ~12× larger, so the same recipe
+has a harder tracking problem and its plateau may sit further out. 4 h at round
+1's rate is only ~2300 iterations. Three changes:
+
+1. **Use the idle GPUs.** Run **three variants in parallel from the start**, one
+   GPU each: (a) jp24 = jp20 recipe, warm from `final/p5/jp20_last_it2848`;
+   (b) the same with `--num-envs 8192` (more samples per iteration, the library
+   is bigger); (c) the same as (a) but warm-started and with the reward's far
+   kernel slightly relaxed if your first replay curve stalls — your call, one
+   knob only. Ceiling-test each on the same 20 episodes; the ceiling test is the
+   only valid selector (round-1 finding).
+2. **Extend rather than stop.** If the best variant's ceiling series is still
+   rising at its cap, continue it warm for another 2 h and keep testing. Stop
+   when two consecutive ceiling tests fail to beat the best, or at ≥ 18/20.
+3. **Budget guard.** P8 owns the pod until P9 needs 6 GPUs. If the decoder is
+   still below 15/20 after ~7 h total, take the best you have, write the number
+   plainly, and go on to P9 anyway — lane B's row is then read against its own
+   B-oracle, exactly as round 1 taught. Do not let P8 eat P9's day.
+
+Same hard rules: kill only recorded pids, mark NEEDS-CLEANUP, nothing deleted.
+
 ## 15:20 UTC (2026-09-04, P7) — screening accepted; now do the dense pass, then one dataset
 
 Your covariate analysis is the right call and it refutes both of my hypotheses
