@@ -727,21 +727,29 @@ def _modality_config(lane: str) -> Path:
     return LANE_A / "modality_config_dual_fr3.py"
 
 
-def _finetune_cmd(dataset: Path, out: Path, num_gpus: int, lane: str = "lane_a") -> list[str]:
+def _finetune_cmd(dataset: Path, out: Path, num_gpus: int, lane: str = "lane_a",
+                  train_steps: int = 2000, save_steps: int = 500,
+                  save_total_limit: int = 5, master_port: int = 29517) -> list[str]:
+    """The fine-tune command. Round 1's numbers are the defaults, so every round-1
+    invocation reproduces token-for-token; P9 raises the budget through --train-steps
+    /--save-steps/--save-total-limit (WP 9.0). NOTE the CLI's own --max-steps means the
+    *evaluation* horizon, which is why the trainer's step budget is a different flag here.
+    Only --dataset-path, --modality-config-path and --output-dir may ever differ between
+    the two lanes."""
     launch = [str(GR00T_PY), "-m", "gr00t.experiment.launch_finetune"]
     if num_gpus > 1:
         launch = [str(Path(GR00T_PY).parent / "torchrun"), f"--nproc_per_node={num_gpus}",
-                  "--master_port=29517", "-m", "gr00t.experiment.launch_finetune"]
+                  f"--master_port={master_port}", "-m", "gr00t.experiment.launch_finetune"]
     return launch + [
         "--base-model-path", "nvidia/GR00T-N1.7-3B",
         "--dataset-path", str(dataset),
         "--embodiment-tag", "NEW_EMBODIMENT",
         "--modality-config-path", str(_modality_config(lane)),
         "--num-gpus", str(num_gpus),
-        "--max-steps", "2000", "--save-steps", "500", "--global-batch-size", "32",
+        "--max-steps", str(train_steps), "--save-steps", str(save_steps), "--global-batch-size", "32",
         "--color-jitter-params", "brightness", "0.3", "contrast", "0.4", "saturation", "0.5", "hue", "0.08",
         "--dataloader-num-workers", "4",
-        "--save-total-limit", "5",
+        "--save-total-limit", str(save_total_limit),
         "--no-use-wandb",
         "--output-dir", str(out),
     ]
@@ -767,13 +775,21 @@ def stage_finetune(run: Run) -> int:
     dataset = _dataset_dir(run)
     out = run.dir / "out" / "checkpoints"
     n_gpus = len((run.devices or "").split(",")) if run.devices else 1
-    cmd = _finetune_cmd(dataset, out, n_gpus, run.lane)
+    train_steps = int(getattr(run.args, "train_steps", 2000))
+    save_steps = int(getattr(run.args, "save_steps", 500))
+    save_total_limit = int(getattr(run.args, "save_total_limit", 5))
+    # torchrun's rendezvous port. P9 trains both lanes concurrently on one node, and two
+    # torchrun jobs cannot bind the same port; it is a launcher detail, not a hyperparameter.
+    master_port = 29517 if run.lane != "lane_b" else 29518
+    cmd = _finetune_cmd(dataset, out, n_gpus, run.lane, train_steps, save_steps,
+                        save_total_limit, master_port)
     wp = "P3 WP 3.3 — lane B's policy; gate p3" if run.lane == "lane_b" else "P1 WP 1.3 — lane A's policy; gate p1"
     run.write_readme(
         what=(f"gr00t.experiment.launch_finetune on {dataset} with {n_gpus} GPU(s): "
-              "--max-steps 2000 --save-steps 500 --global-batch-size 32, SONIC-tutorial colour jitter, "
+              f"--max-steps {train_steps} --save-steps {save_steps} --global-batch-size 32, "
+              "SONIC-tutorial colour jitter, "
               f"4 dataloader workers, default LR/optimizer, no LoRA; modality config {_modality_config(run.lane)}."),
-        why=f"{wp} reads out/checkpoints/checkpoint-2000.",
+        why=f"{wp} reads out/checkpoints/checkpoint-{train_steps}.",
     )
     run.write_cmd([f"cd {os.path.expanduser('~/Isaac-GR00T')}",
                    f"export CUDA_VISIBLE_DEVICES={run.devices or ''}",
@@ -792,8 +808,8 @@ def stage_finetune(run: Run) -> int:
     rc = run.tee(cmd, cwd=Path(os.path.expanduser("~/Isaac-GR00T")), env=env)
     if rc != 0:
         return rc
-    if not (out / "checkpoint-2000").is_dir():
-        print(f"[bakeoff] finetune exited 0 but {out}/checkpoint-2000 is missing", file=sys.stderr)
+    if not (out / f"checkpoint-{train_steps}").is_dir():
+        print(f"[bakeoff] finetune exited 0 but {out}/checkpoint-{train_steps} is missing", file=sys.stderr)
         return 1
     return 0
 
@@ -1559,6 +1575,15 @@ def main(argv=None) -> int:
                    help="lane_b/oracle_a_tol: constant offset on the left joint-1 targets (P5 tolerance test)")
     r.add_argument("--max-steps", type=int, default=1500,
                    help="evaluation.eval horizon at 50 Hz (30 s = the env's own episode length)")
+    # P9 WP 9.0: the fine-tune's step budget. --max-steps above is the EVALUATION horizon in
+    # this CLI, so the trainer's budget needs its own name. Defaults are round 1's numbers.
+    r.add_argument("--train-steps", type=int, default=2000,
+                   help="finetune: gradient steps (round 1 ran 2000; P9 runs 20000)")
+    r.add_argument("--save-steps", type=int, default=500,
+                   help="finetune: checkpoint interval in steps")
+    r.add_argument("--save-total-limit", type=int, default=5,
+                   help="finetune: checkpoints kept. AGENTS.md rule o: set it high enough that "
+                        "the trainer never rotates one away (P9 keeps all 8)")
     r.set_defaults(fn=cmd_run)
     q = sub.add_parser("root", help="print the run root a new run would use, free space and floor")
     q.set_defaults(fn=cmd_root)
