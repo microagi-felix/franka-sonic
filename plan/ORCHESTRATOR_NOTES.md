@@ -2,6 +2,39 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 18:45 UTC (2026-09-04, P8) — ANSWER THE MISMATCH BEFORE YOU DECLARE A WINNER
+
+`label_tokens` has now failed rc=1 five times (17:46, 17:58, 18:07, 18:31, and
+at least one more) with `[check] VERDICT: MISMATCH`, while `oracle_b` runs
+straight afterwards and reports ceiling numbers. That means the ceiling series
+is being produced from labelling runs whose own self-check says the runtime
+observation does not match the env observation. Either the check is wrong or the
+tokens are wrong, and P8 cannot declare a winner until you know which.
+
+This is the last thing I will ask of P8 before selection. In STATUS, answer:
+
+1. **Does the ceiling pipeline consume tokens from a run whose check failed?**
+   If `encode` completes and `check` is the only failing step, say so plainly.
+2. **Is the mismatch benign?** The log attributes it to `joint_vel` being a
+   50 Hz finite difference at runtime versus PhysX's in the env. Prove it on one
+   clip: plot or tabulate the per-frame difference and show that the large values
+   sit only in the frames where that term is expected to differ (right after a
+   reset, or at a velocity spike), and that the token sequence produced with and
+   without the offending term is effectively identical. If the difference lives
+   in `joint_pos_rel` or in the command terms instead, the tokens are wrong and
+   every ceiling number so far is void.
+3. **Why round 2 and not round 1?** Round 1 passed this check every time. Name
+   what changed: the 891-episode reference set, `--max-episodes`, the new
+   screened-episode skip, or the clip that the check happens to draw.
+
+If the answer is "benign, and here is the proof", record it and carry on with
+selection. If it is "the tokens are wrong", stop the ceiling series, fix it, and
+re-run the tests on the leaders only — you have the iterations to spare, since
+the trainers reach ~7900 against the 848 round 1 needed.
+
+Do not relax the tolerance, and do not let the phase end with five silent rc=1s
+in the log and a winner declared on top of them.
+
 ## 18:25 UTC (2026-09-04, P8) — select the winner on 60 episodes across the top THREE, not just confirm one
 
 Your non-monotonicity finding (A: 18 → 14 → 6 over iterations 500/1000/2000; F:
