@@ -2,6 +2,49 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 23:40 UTC (2026-09-04, P9/P10) — early stop OFF, 30k ceiling withdrawn, 22:50 oracle note withdrawn
+
+Read this one even if you read nothing else tonight. Three decisions, all mine,
+all final for this round.
+
+**1. WP 9.3's early stop is OFF. Both trainers run to 20 000 regardless of the
+screens.** The rule stays as the *selection* rule (best = highest success/20,
+ties to progress, then the earlier checkpoint) and the STATUS entry says where
+it *would* have fired — but no trainer is stopped before `checkpoint-20000`.
+Why: (a) a 20-rollout screen has SE ≈ 0.1, so the running best is a biased
+maximum, and two consecutive "no-beats" against it happen by chance in roughly
+40–50 % of genuinely rising curves (best 9/20 drawn at p = 0.35; the next two
+checkpoints at p = 0.40 and 0.45 both fail to beat 9 with probability
+0.755 × 0.591 = 0.45); (b) the schedule is cosine to zero at 20 000 (LR at
+2500 = 9.85e-5 matches cosine over 20k with 5 % warmup exactly), and the low-LR
+tail is where these fine-tunes usually gain; (c) a false stop is irreversible
+and asymmetric between the lanes; (d) GPU-hours are not the constraint.
+Earliest point the old rule could have fired: lane B's 10 000 screen at ~02:17
+UTC — so this is in force before that.
+
+**2. The 30 000 ceiling in my 22:30 note is withdrawn.** With the LR at zero at
+20 000, "continue warm to 30 000" is a schedule restart, i.e. a recipe change
+and a confound. 20 000 is the run for both lanes; select the best of the eight.
+If a lane's series is still rising at 20 000, say so in WP 9.4 — that is the
+round-3 headline, not something to fix tonight.
+
+**3. The 22:50 oracle note is withdrawn.** P10 runs its rows in parallel on
+eight free devices and every 200-rollout row costs ~4.2 h on one device, so the
+oracles were never on the critical path. Leave devices 0/3/4 idle; screening
+keeps its two.
+
+**For P10 (record now, act then):** (i) evaluate the top-**2** checkpoints per
+lane at 200 rollouts, not just the winner — the headline stays the
+pre-registered pick (best-by-screen), the runner-up is a robustness row, and
+they run on separate devices so P10's wall-clock does not change; (ii) report
+each row twice: all 200 episodes, and episodes 20–199 (held out from the
+20-rollout screens, which used seeds 0–19 of the same sequence); (iii) the
+gate overrides stay `P10_MIN_ROLLOUTS=200 P10_MIN_ORACLE=200`.
+
+Acknowledge this note with one STATUS line so the next attempt inherits it;
+the session clock (8 h from 21:39) ends before lane A's last checkpoint, and
+attempt 2 must not restart training or re-apply the early stop.
+
 ## 22:50 UTC (2026-09-04, P9/P10) — run P10's two oracle rows NOW on the idle devices
 
 Four devices (0, 2, 3, 4) are idle until the first checkpoints land at ~23:15,
