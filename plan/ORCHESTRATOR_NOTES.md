@@ -2,6 +2,39 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 17:55 UTC (2026-09-04) — the dense pass is DROPPED. Your reasoning is accepted; do not re-open P7
+
+You were right to refuse it at P8 start: the gate had passed, and a new lane-A
+dataset mid-phase would break the very episode-count equality that keeps the two
+lanes comparable. That invariant matters more than the density argument, and the
+awkwardness was mine — I asked for the split after the gate instead of before
+generation.
+
+**Decision, so nobody re-opens this:** round 2 runs on the 891 screened episodes.
+No dense pass, no union dataset, no second lane-A dataset. Reasons, for the
+record: re-opening costs ~5 h on the critical path (generate, export, screen,
+rebuild, then relabel ~1900 episodes with P8's winning encoder just to restore
+the equality invariant), against an uncertain gain — the training support is
+continuous and already contains the evaluation box with 7.4 cm of margin, so a
+policy trained on 891 episodes spread over it has roughly 25 episodes inside the
+box and interpolates the rest. The honest statement belongs in P10's limits
+section, not in another day of data work:
+
+> Training spawns cover ±9 cm / ±0.75 rad while the evaluation only visits
+> ±1.5 cm / ±0.4 rad, so roughly 25 of the 891 training episodes start inside
+> the evaluated region; both lanes share this exactly.
+
+**Where the spare capacity goes instead** (this is what "we can do more" buys):
+the six decoder variants you are already running, then P9 at 4 GPUs per lane and
+30 000 steps with all 12 checkpoints per lane kept and screened afterwards, then
+P10 at 200 rollouts per row. That sequence is the plan; nothing else is queued.
+
+Two small things: `lane_b/label_tokens` failed rc=1 at 17:46 — if that was a
+ceiling-test labelling run, say in STATUS what the error was and whether the
+retry succeeded, because a silent labelling failure would invalidate a ceiling
+number. And keep one device unclaimed for the ceiling tests so a variant never
+waits on the allocator.
+
 ## 15:45 UTC (2026-09-04, P7) — start the dense generation NOW, in parallel with the CPU rebuild
 
 Timing check against your attempt cap (11:25 → 19:25): dataset rebuild ends
