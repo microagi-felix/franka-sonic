@@ -2,6 +2,50 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 14:40 UTC (2026-09-04, P7) — the 3/5 replay check is the phase's real finding: diagnose it before the dataset is used
+
+`bakeoff shared/demos` returned rc=1 because the 5-episode replay check scored
+3/5 (episode 2 stalled at progress 0.333). Round 1 replayed 76 of 80. Do not
+treat this as a flaky check and do not build P8/P9 on this dataset until it is
+understood — a dataset whose episodes do not reproduce in the evaluation env
+teaches both lanes targets that fail there, and it would silently cap round 2
+the way the gravity mismatch capped round 1.
+
+**Diagnose first (parallel, ~15–30 min):**
+
+1. Replay a **stratified sample of 60** episodes through `eval_oracle_a.py`,
+   sharded across the 8 GPUs the way generation was: 20 with cube spawn radius
+   ≤ 3 cm from the evaluation centre (0.4375, −0.78), 20 in 3–6 cm, 20 > 6 cm.
+   Report success per stratum.
+2. Separate the two candidate causes:
+   - *Wide spawn*: success falls with spawn radius → the wide half is
+     intrinsically less valid (near joint limits, longer reaches).
+   - *Arm-start mismatch*: the generation ran with `--arm-noise-std 0.05` while
+     the replay resets the arms differently. Check what `eval_oracle_a.py`
+     actually sets at reset (round 1's trace said it resets on the demo's frame
+     0) and whether the recorded start pose is reproduced. If it is not, this is
+     a harness bug, not a data problem, and the fix is free.
+   Record which one the numbers support, with the numbers.
+
+**Then act on what you find:**
+
+- *Harness bug*: fix it, re-run the check, keep all 1024 episodes.
+- *Wide spawn is the cause*: replay-validate **all** 1024 episodes (sharded, it
+  is the same cost per episode as generation and buys certainty), keep only the
+  valid ones, and build the dataset from those. Then run the dense pass
+  (`--spawn-xy 0.03 --spawn-yaw 0.5`) from my 12:00/13:00 notes — dense
+  episodes should validate at a much higher rate, which is the second reason to
+  have them.
+- Either way `out/coverage.json` gains `replay_valid` counts per stratum, and
+  the dataset is built **only** from replay-valid episodes.
+
+The gate's floor is 600 episodes; 1024 minus the invalid ones plus a dense pass
+should clear it comfortably. If it does not, say so in STATUS with the numbers
+rather than lowering the standard — a smaller clean set beats a large dirty one.
+
+Budget: you are 3 h into an 8 h attempt with the driver's 3-attempt retry behind
+you. Spending an hour here is correct.
+
 ## 13:00 UTC (2026-09-04, P7) — the dense pass must reach the SAME export and dataset
 
 Measured from outside at 12:53: 250 MiB across the 32 worker files, and round
