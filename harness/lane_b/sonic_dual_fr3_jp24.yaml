@@ -1,0 +1,25 @@
+# @package _global_
+# P8 "jp24" = the P5 WINNER recipe (sonic_dual_fr3_jp20) on the ROUND-2 motion library.
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp24.yaml
+# Installed as:   ~/GR00T-WholeBodyControl/gear_sonic/config/exp/sonic_dual_fr3_jp24.yaml
+#
+# Nothing but the reference set changes. jp20 = jp18 rewards on lane A's plant (dual_fr3_lanea:
+# gravity OFF, PD 400/80 on all seven joints, armature 0, USD velocity limits, soft-limit factor
+# 1.0, solver 16/1, 100 Hz physics with decimation 2) — the two P5 root causes, which this phase
+# must NOT re-derive or "improve" (plan/prompts/P5.md, STATUS 2026-09-03 23:20).
+#
+# Round-2 library (P8 WP 8.0, ~/runs/franka-sonic/lane_b/2026-09-04_motion_lib):
+#   891 SCREENED P7 episodes (replay_success AND jointpos_replay_success) + their _M mirrors
+#   = 1782 clips / 867 132 frames / 89 MB, no augmentations.
+#   Round 1: 76 demos -> 1216 clips (mirrors + 7 augmentations) / 474 716 frames.
+# harness/bakeoff.py also passes --motions on the CLI (++...motion_file=), which wins; both
+# point at the same directory so the stamped config and the command agree.
+defaults:
+  - sonic_dual_fr3_jp20
+  - _self_
+
+manager_env:
+  commands:
+    motion:
+      motion_lib_cfg:
+        motion_file: /home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-04_motion_lib/out/motions

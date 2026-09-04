@@ -1,0 +1,19 @@
+# @package _global_
+# P8 "jp26" = jp24 with ONE reward knob: the joint-space tracking term's TIGHT kernel sharpened
+# 0.15 -> 0.08 rad (sonic_rewards:tracking_joint_space, mounted on the nulled feet_acc slot).
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp26.yaml
+#
+# Why this knob: round 1's grasp failures were terminal-precision failures (P5 jp18 note — a
+# 0.2 rad wrist-roll residual moves a fingertip 1-2 cm). With 11.7x more reference motions the
+# wide/far kernels carry the coarse fit; a tighter terminal kernel is the cheapest way to buy
+# the last centimetre. Everything else (weights 25/0.25/0.25/0.5, std_wide 0.5, std_far 3.0,
+# the plant, the library) is jp24's.
+defaults:
+  - sonic_dual_fr3_jp24
+  - _self_
+
+manager_env:
+  rewards:
+    feet_acc:
+      params:
+        std_tight: 0.08

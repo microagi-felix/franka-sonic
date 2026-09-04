@@ -1,0 +1,17 @@
+# @package _global_
+# P8 "jp27" = jp24 with ONE reward knob: the joint-space tracking term's WEIGHT 25.0 -> 40.0
+# (sonic_rewards:tracking_joint_space on the nulled feet_acc slot).
+# Canonical copy: franka-sonic/harness/lane_b/sonic_dual_fr3_jp27.yaml
+#
+# Why this knob: the round-2 reference set is 11.7x larger and much more diverse in cube spawn
+# (+-9 cm vs +-6 cm), so the risk is UNDER-fitting the joint-space reference, not over-fitting
+# it. Raising the joint term's weight against the body/anchor/vr terms is the direct answer;
+# the kernel widths stay at jp24's so the two knob variants probe different axes.
+defaults:
+  - sonic_dual_fr3_jp24
+  - _self_
+
+manager_env:
+  rewards:
+    feet_acc:
+      weight: 40.0

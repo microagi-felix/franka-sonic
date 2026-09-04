@@ -368,6 +368,7 @@ def load_demos(patterns: list[str], limit: int | None = None) -> list[dict]:
         files.extend(sorted(glob.glob(os.path.expanduser(pat))))
     assert files, f"no HDF5 shards matched {patterns}"
     demos = []
+    n_screened_out = 0
     for path in files:
         base = os.path.basename(path)
         # `demos_shard0.hdf5` -> "0". Take the digit run right after "shard": a
@@ -384,6 +385,19 @@ def load_demos(patterns: list[str], limit: int | None = None) -> list[dict]:
                     rs = rs.decode()
                 if str(rs) != "True":
                     continue
+                # `jointpos_replay_success` (harness/data/jointpos_screen.py, P7) marks the
+                # episodes whose recorded ABSOLUTE joint targets reproduce the handover on the
+                # evaluation's own JointPos controller. It is absent on round-1 shards, so a
+                # missing attr means True and every round-1 command reproduces byte for byte.
+                # P8: the reference library must be the screened set, so lane B's episode count
+                # equals lane A's dataset (P7 STATUS 2026-09-04 15:55).
+                jp = g.attrs.get("jointpos_replay_success")
+                if jp is not None:
+                    if isinstance(jp, bytes):
+                        jp = jp.decode()
+                    if str(jp) != "True":
+                        n_screened_out += 1
+                        continue
                 ql = np.asarray(g["obs/joint_pos_left"], dtype=np.float64)
                 qr = np.asarray(g["obs/joint_pos_right"], dtype=np.float64)
                 n = int(g.attrs["num_samples"])
@@ -400,7 +414,10 @@ def load_demos(patterns: list[str], limit: int | None = None) -> list[dict]:
                     "q": q,
                 })
                 if limit is not None and len(demos) >= limit:
+                    print(f"[load] {len(demos)} demos (limit), "
+                          f"{n_screened_out} skipped by jointpos_replay_success", flush=True)
                     return demos
+    print(f"[load] {n_screened_out} demos skipped by jointpos_replay_success=False", flush=True)
     return demos
 
 

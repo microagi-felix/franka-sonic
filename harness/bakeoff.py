@@ -1239,12 +1239,36 @@ def stage_label_tokens(run: Run) -> int:
         sys.exit(f"[bakeoff] no lane A gr00t_v2 dataset (with provenance.json) under {ds_run}")
     dataset_a = ds_run / "out" / "gr00t_v2"
     out = run.dir / "out"
-    # the 76 ORIGINAL clips (no _M, no augmentation tag) in their own directory: the motion lib
+    # the ORIGINAL clips (no _M, no augmentation tag) in their own directory: the motion lib
     # loads a whole directory
     clips_dir = out / "clips_orig"
     clips_dir.mkdir(exist_ok=True)
     originals = sorted(p for p in motions.glob("*.pkl")
                        if p.stem.count("_") == 2 and not p.stem.endswith("_M"))
+    # P8 WP 8.2: --max-episodes N labels only the FIRST N dataset episodes, so a per-checkpoint
+    # ceiling test costs ~20 clips instead of the whole set. The obs step is the expensive one,
+    # so the clip directory is narrowed to exactly the clips those N episodes resolve to
+    # (dataset provenance -> motion-lib manifest, the same mapping label_tokens.py encode uses);
+    # encode gets the flag it already has. N <= 0 (the default) labels everything, i.e. round 1.
+    max_eps = int(getattr(run.args, "max_episodes", 0) or 0)
+    if max_eps > 0:
+        prov = json.loads((dataset_a / "meta" / "provenance.json").read_text())
+        eps = sorted(int(k) for k in prov if k.isdigit() and isinstance(prov[k], dict))[:max_eps]
+        man = json.loads(manifest.read_text())
+        entries = man["clips"] if isinstance(man, dict) and "clips" in man else man
+        clip_of = {(os.path.basename(e["source_shard"]), e["source_demo"]): e["name"]
+                   for e in entries if e.get("aug") == "orig" and not e.get("mirrored")}
+        want, missing = [], []
+        for ep in eps:
+            key = (os.path.basename(prov[str(ep)]["source_file"]), prov[str(ep)]["demo_name"])
+            (want if key in clip_of else missing).append(clip_of.get(key, key))
+        if missing:
+            sys.exit(f"[bakeoff] --max-episodes {max_eps}: {len(missing)} of the first {max_eps} "
+                     f"dataset episodes have no original clip in {manifest}: {missing[:5]}")
+        keep = set(want)
+        originals = [q for q in originals if q.stem in keep]
+        print(f"[bakeoff] --max-episodes {max_eps}: labelling {len(originals)} clips "
+              f"(episodes {eps[0]}..{eps[-1]}) of {len(keep)} requested", flush=True)
     for p in originals:
         if not (clips_dir / p.name).exists():
             shutil.copy2(p, clips_dir / p.name)
@@ -1270,7 +1294,8 @@ def stage_label_tokens(run: Run) -> int:
                "--out", str(out / "encoder_obs")]
     encode_cmd = [str(GR00T_PY), str(LANE_B / "label_tokens.py"), "encode",
                   "--obs", str(out / "encoder_obs"), "--encoder", str(enc_onnx),
-                  "--dataset", str(dataset_a), "--manifest", str(manifest), "--out", str(out / "tokens")]
+                  "--dataset", str(dataset_a), "--manifest", str(manifest), "--out", str(out / "tokens")] \
+        + (["--max-episodes", str(max_eps)] if max_eps > 0 else [])
     check_cmd = [str(GR00T_PY), str(LANE_B / "label_tokens.py"), "check", "--dump", str(dump_npz),
                  "--obs", str(out / "encoder_obs"), "--encoder", str(enc_onnx), "--decoder", str(dec_onnx),
                  "--out", str(val_dir / "validation.json")]
@@ -1483,6 +1508,9 @@ def main(argv=None) -> int:
                    help="lane_b/*_export_onnx run folder (encoder+decoder ONNX); default newest")
     r.add_argument("--tokens", default=None,
                    help="lane_b/*_label_tokens run folder (out/tokens) for oracle_b; default newest")
+    r.add_argument("--max-episodes", type=int, default=0,
+                   help="lane_b/label_tokens: label only the first N dataset episodes "
+                        "(P8 WP 8.2 ceiling tests; 0 = all)")
     # shared/demos sizing (P7 WP 7.0). Defaults are round 1's hard-coded numbers, so every
     # round-1 command reproduces unchanged.
     r.add_argument("--n-sources", type=int, default=10,
