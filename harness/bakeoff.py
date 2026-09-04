@@ -26,6 +26,7 @@ import argparse
 import datetime as _dt
 import json
 import os
+import random
 import shlex
 import signal
 import socket
@@ -432,17 +433,31 @@ def stage_p0_smoke(run: Run) -> int:
 
 RATE_HZ = 50  # rev 3c: recorder, datasets and eval all at 50 Hz (100 Hz physics, decimation 2)
 MIMIC_TASK = "Isaac-Stack-Cube-DualFranka-IK-Abs-Mimic-v0"
+# mimic/env_cfg.py's GEN_SPAWN_XY / GEN_SPAWN_YAW — the round-1 generation spawn range, and the
+# defaults of --spawn-xy / --spawn-yaw so round-1 commands reproduce (P7 WP 7.0/7.1).
+GEN_SPAWN_XY_DEFAULT = 0.06
+GEN_SPAWN_YAW_DEFAULT = 0.5
 ISAACLAB_ROOT = "/workspace/isaaclab"  # Isaac Lab 2.3.2 checkout the sim user-site was built from
 DATA = REPO / "harness" / "data"
 LANE_A = REPO / "harness" / "lane_a"
 
 
 def _demo_env(run: Run) -> dict:
-    return sim_env({
+    extra = {
         "CUDA_VISIBLE_DEVICES": run.devices or "",
         "MIMIC_RATE_HZ": str(RATE_HZ),
         "ISAACLAB_ROOT": ISAACLAB_ROOT,
-    })
+    }
+    # P7 WP 7.1: generation-time spawn widening. Only harness/data/generate_handover.py's
+    # Mimic-env patch reads these; the export/replay envs and the EVALUATION env ignore them.
+    # The defaults equal mimic/env_cfg.py's own GEN_SPAWN_XY / GEN_SPAWN_YAW, so a round-1
+    # command reproduces bit-for-bit.
+    extra["MIMIC_SPAWN_XY"] = f"{getattr(run.args, 'spawn_xy', GEN_SPAWN_XY_DEFAULT):g}"
+    extra["MIMIC_SPAWN_YAW"] = f"{getattr(run.args, 'spawn_yaw', GEN_SPAWN_YAW_DEFAULT):g}"
+    arm_noise = getattr(run.args, "arm_noise_std", -1.0)
+    if arm_noise is not None and arm_noise >= 0.0:
+        extra["MIMIC_ARM_NOISE_STD"] = f"{arm_noise:g}"
+    return sim_env(extra)
 
 
 def stage_demos(run: Run) -> int:
@@ -465,16 +480,25 @@ def stage_demos(run: Run) -> int:
         while generated.exists() or generated.with_name(f"{generated.stem}_w0.hdf5").exists():
             k += 1
             generated = out / f"generated-{k}.hdf5"
-    n_sources, n_generated, n_procs, n_shards = 10, 80, 4, 4
+    a = run.args
+    n_sources, n_generated = a.n_sources, a.n_generated
+    n_procs, n_shards, n_replay = a.n_procs, a.n_shards, a.n_replay
+    spawn_xy, spawn_yaw = a.spawn_xy, a.spawn_yaw
+    coverage_json = out / "coverage.json"
+    replay_pick = out / "replay_episodes.json"
     env = _demo_env(run)
     run.write_readme(
         what=(
             f"The demo set both lanes train on: {n_sources} scripted source demos at {RATE_HZ} Hz "
             f"(harness/data/scripted_source_demos.py, mirrored right-arm grasp for the angled rig), "
             f"auto-annotated, MimicGen-expanded to {n_generated} episodes ({n_procs} single-env workers "
-            f"at {RATE_HZ} Hz via MIMIC_RATE_HZ), exported in {n_shards} shards as video-backed "
-            f"training-schema HDF5 with the differential-IK joint targets recorded per step, plus a "
-            f"one-episode replay through the JointPos env (out/replay_check)."
+            f"at {RATE_HZ} Hz via MIMIC_RATE_HZ) with the cube spawned in "
+            f"+/-{spawn_xy:g} m / +/-{spawn_yaw:g} rad around the start slot"
+            + (f" and arm reset noise std {a.arm_noise_std:g} rad" if a.arm_noise_std >= 0 else "")
+            + f", exported in {n_shards} shards as video-backed "
+            f"training-schema HDF5 with the differential-IK joint targets recorded per step, then "
+            f"out/coverage.json (measured spawn distribution vs the evaluation range) and a "
+            f"{n_replay}-episode replay through the JointPos env (out/replay_check)."
         ),
         why=(
             "No demo HDF5 existed when P1 started (gate p0 covers the environment half only). "
@@ -489,7 +513,8 @@ def stage_demos(run: Run) -> int:
                "--input", str(annotated), "--output", str(fixed)]
     gen_cmd = [str(PYSH), str(DATA / "generate_parallel.py"), "--task", MIMIC_TASK,
                "--input", str(fixed), "--output", str(generated),
-               "--total", str(n_generated), "--procs", str(n_procs)]
+               "--total", str(n_generated), "--procs", str(n_procs),
+               "--deadline_min", f"{a.gen_deadline_min:g}"]
     exp_cmds = {
         f"export_shard{i}": [str(PYSH), str(DATA / "export_generated_50hz.py"),
                              "--input", str(generated),
@@ -498,15 +523,20 @@ def stage_demos(run: Run) -> int:
                              "--headless"]
         for i in range(n_shards)
     }
+    cov_cmd = [str(GR00T_PY), str(DATA / "spawn_coverage.py"),
+               "--export", str(export_dir / "*.hdf5"), "--output", str(coverage_json)]
     replay_cmd = [str(PYSH), str(LANE_A / "eval_oracle_a.py"),
                   "--demos", str(export_dir), "--run-folder", str(out / "replay_check"),
-                  "--rate", str(RATE_HZ), "--rollouts", "1", "--max-steps", str(run.args.max_steps),
-                  "--no-splat", "--headless"]
+                  "--rate", str(RATE_HZ), "--rollouts", str(n_replay),
+                  "--max-steps", str(run.args.max_steps), "--no-splat", "--headless"]
     q = lambda c: " ".join(shlex.quote(x) for x in c)  # noqa: E731
+    spawn_exports = (f"export MIMIC_SPAWN_XY={spawn_xy:g} MIMIC_SPAWN_YAW={spawn_yaw:g}"
+                     + (f" MIMIC_ARM_NOISE_STD={a.arm_noise_std:g}" if a.arm_noise_std >= 0 else ""))
     run.write_cmd([
         f"cd {FR3_REPO}", f"export PYTHONUSERBASE={USERBASE_FR3}",
         f"export CUDA_VISIBLE_DEVICES={run.devices or ''}",
-        f"export MIMIC_RATE_HZ={RATE_HZ} ISAACLAB_ROOT={ISAACLAB_ROOT}", "",
+        f"export MIMIC_RATE_HZ={RATE_HZ} ISAACLAB_ROOT={ISAACLAB_ROOT}",
+        f"{spawn_exports}   # P7 WP 7.1: generation-time spawn range (generate_handover.py only)", "",
         "# 1. sources (Isaac recorder format, success-only)", q(src_cmd), "",
         "# 2. auto-annotate subtask signals, then make left_placed MimicGen-parsable (0.20 m rig)",
         q(ann_cmd), q(fix_cmd), "",
@@ -514,7 +544,13 @@ def stage_demos(run: Run) -> int:
         "# 4. export (video-backed, half-res frames, IK joint targets) in parallel shards",
         *[q(c) + f" > {run.dir / 'logs' / (n + '.log')} 2>&1 &" for n, c in exp_cmds.items()],
         "wait", "",
-        "# 5. replay check: one generated episode through the JointPos env", q(replay_cmd),
+        "# 5. measured spawn distribution vs the evaluation range (WP 7.1)", q(cov_cmd), "",
+        f"# 6. replay check: {n_replay} generated episode(s) through the JointPos env. The indices"
+        f" are drawn once (seed {a.replay_seed}) when the export finishes and recorded in"
+        f" {replay_pick}.",
+        q(replay_cmd) + f" --episode-indices \"$(python3 -c 'import json,sys;"
+                        f' print(",".join(str(i) for i in json.load(open(sys.argv[1]))["indices"]))\''
+                        f" {shlex.quote(str(replay_pick))})\"",
     ])
 
     if run.wants("sources") and not run.done("sources"):
@@ -555,14 +591,21 @@ def stage_demos(run: Run) -> int:
 
     if run.wants("export") and not run.done("export"):
         export_dir.mkdir(exist_ok=True)
+        # One renderer per claimed device, round-robin. With one device (round 1: 4 shards on
+        # `--gpus 1`) every shard gets that same device, exactly as before.
+        devs = [d for d in (run.devices or "").split(",") if d.strip()]
         procs = {}
-        for name, cmd in exp_cmds.items():
+        for i, (name, cmd) in enumerate(exp_cmds.items()):
             log = run.dir / "logs" / f"{name}.log"
+            shard_env = dict(env)
+            if devs:
+                shard_env["CUDA_VISIBLE_DEVICES"] = devs[i % len(devs)]
             with log.open("w") as fh:
-                procs[name] = subprocess.Popen(cmd, cwd=str(FR3_REPO), env=env,
+                procs[name] = subprocess.Popen(cmd, cwd=str(FR3_REPO), env=shard_env,
                                                stdout=fh, stderr=subprocess.STDOUT, text=True)
             (out / f"{name}.pid").write_text(f"{procs[name].pid}\n")
-            print(f"[bakeoff] {name} pid {procs[name].pid} -> {log}", flush=True)
+            print(f"[bakeoff] {name} pid {procs[name].pid} gpu "
+                  f"{shard_env.get('CUDA_VISIBLE_DEVICES', 'inherited')} -> {log}", flush=True)
         run.wait_pids(procs)
         total = 0
         for name in exp_cmds:
@@ -574,15 +617,40 @@ def stage_demos(run: Run) -> int:
         run.mark_done("export", f"{total} episodes in {n_shards} shards")
         print(f"[bakeoff] export: {total} episodes -> {export_dir}", flush=True)
 
-    if run.wants("replay") and not run.done("replay"):
-        rc = run.tee(replay_cmd, cwd=FR3_REPO, env=env)
-        csv = out / "replay_check" / "eval_results.csv"
-        ok = csv.exists() and any(",True," in line for line in csv.read_text().splitlines())
-        if rc != 0 or not ok:
-            print(f"[bakeoff] replay check failed (rc={rc}, success row={ok}) — see {csv}",
-                  file=sys.stderr)
+    if run.wants("coverage") and not run.done("coverage"):
+        rc = run.tee(cov_cmd, cwd=REPO, env=dict(os.environ))
+        if rc != 0 or not run.log_tail_has(r"COVERAGE_DONE"):
+            print("[bakeoff] coverage failed", file=sys.stderr)
             return 1
-        run.mark_done("replay", "handover_success=True on the JointPos env")
+        cov = json.loads(coverage_json.read_text())
+        run.mark_done("coverage", f"covers_eval={cov['covers_eval']} over {cov['episodes']} episodes")
+
+    if run.wants("replay") and not run.done("replay"):
+        # WP 7.4: n_replay RANDOM episodes, not the first n. eval_oracle_a.py's table holds the
+        # replay_success episodes only, so the draw is over that count (coverage.json measured it).
+        if not replay_pick.exists():
+            if coverage_json.exists():
+                n_pool = json.loads(coverage_json.read_text())["episodes_replay_success"]
+            else:
+                m = run.log_tail_has(r"EXPORT_DONE: (\d+) episodes",
+                                     run.dir / "logs" / "export_shard0.log")
+                n_pool = int(m.group(1)) if m else n_replay
+            k = min(n_replay, max(1, n_pool))
+            idx = sorted(random.Random(a.replay_seed).sample(range(max(1, n_pool)), k))
+            replay_pick.write_text(json.dumps({"seed": a.replay_seed, "pool": n_pool,
+                                               "indices": idx}, indent=2) + "\n")
+        idx = json.loads(replay_pick.read_text())["indices"]
+        rc = run.tee(replay_cmd + ["--episode-indices", ",".join(str(i) for i in idx)],
+                     cwd=FR3_REPO, env=env)
+        csv = out / "replay_check" / "eval_results.csv"
+        rows = [l for l in csv.read_text().splitlines()[1:] if l.strip()] if csv.exists() else []
+        ok = len(rows) >= len(idx) and all(",True," in l for l in rows[:len(idx)])
+        if rc != 0 or not ok:
+            print(f"[bakeoff] replay check failed (rc={rc}, {sum(',True,' in l for l in rows)}/"
+                  f"{len(idx)} successes on episodes {idx}) — see {csv}", file=sys.stderr)
+            return 1
+        run.mark_done("replay", f"handover_success=True on {len(idx)}/{len(idx)} random episodes "
+                                f"{idx} (seed {a.replay_seed}) on the JointPos env")
     return 0
 
 
@@ -1406,6 +1474,32 @@ def main(argv=None) -> int:
                    help="lane_b/*_export_onnx run folder (encoder+decoder ONNX); default newest")
     r.add_argument("--tokens", default=None,
                    help="lane_b/*_label_tokens run folder (out/tokens) for oracle_b; default newest")
+    # shared/demos sizing (P7 WP 7.0). Defaults are round 1's hard-coded numbers, so every
+    # round-1 command reproduces unchanged.
+    r.add_argument("--n-sources", type=int, default=10,
+                   help="shared/demos: scripted source demos to record")
+    r.add_argument("--n-generated", type=int, default=80,
+                   help="shared/demos: MimicGen successes wanted (a target, not a guarantee)")
+    r.add_argument("--n-procs", type=int, default=4,
+                   help="shared/demos: parallel single-env MimicGen workers")
+    r.add_argument("--n-shards", type=int, default=4,
+                   help="shared/demos: parallel export renderer shards")
+    r.add_argument("--n-replay", type=int, default=1,
+                   help="shared/demos: generated episodes replayed on the JointPos env (WP 7.4)")
+    r.add_argument("--replay-seed", type=int, default=0,
+                   help="shared/demos: RNG seed for which episodes the replay check draws")
+    r.add_argument("--gen-deadline-min", type=float, default=0.0,
+                   help="shared/demos: wall-clock budget for MimicGen generation in minutes; at "
+                        "the deadline the workers are stopped and what they flushed is merged "
+                        "(0 = no cap)")
+    r.add_argument("--spawn-xy", type=float, default=GEN_SPAWN_XY_DEFAULT,
+                   help="shared/demos: GENERATION cube spawn half-range in x and y (m). The "
+                        "evaluation env is untouched by this (P7 WP 7.1)")
+    r.add_argument("--spawn-yaw", type=float, default=GEN_SPAWN_YAW_DEFAULT,
+                   help="shared/demos: GENERATION cube spawn yaw half-range (rad)")
+    r.add_argument("--arm-noise-std", type=float, default=-1.0,
+                   help="shared/demos: GENERATION arm reset-pose noise std (rad); "
+                        "< 0 leaves the env cfg's own value (0.02)")
     r.add_argument("--num-envs", type=int, default=2048, help="lane_b/sonic_rl: parallel envs")
     r.add_argument("--exp", default="sonic_dual_fr3",
                    help="lane_b/sonic_rl: gear_sonic experiment config (+exp=…)")

@@ -42,6 +42,11 @@ def merge(worker_files: list[str], output: str) -> int:
             if not os.path.exists(wf):
                 print(f"[parallel] WARNING: worker file missing: {wf}", flush=True)
                 continue
+            try:
+                h5py.File(wf, "r").close()
+            except OSError as exc:  # a deadline-stopped worker can leave an unreadable tail
+                print(f"[parallel] WARNING: worker file unreadable, skipped: {wf} ({exc})", flush=True)
+                continue
             with h5py.File(wf, "r") as f:
                 # copy file-level attrs once (env args etc.)
                 for k, v in f.attrs.items():
@@ -65,6 +70,10 @@ def main() -> None:
     p.add_argument("--total", type=int, default=80, help="total successful demos wanted")
     p.add_argument("--procs", type=int, default=4)
     p.add_argument("--seed_base", type=int, default=100)
+    p.add_argument("--deadline_min", type=float, default=0.0,
+                   help="P7: wall-clock budget in minutes; at the deadline the workers this "
+                        "process started are stopped (SIGTERM, then SIGKILL after a grace "
+                        "period) and whatever they already flushed is merged. 0 = no cap.")
     args = p.parse_args()
 
     per = math.ceil(args.total / args.procs)
@@ -73,6 +82,10 @@ def main() -> None:
     stem = os.path.splitext(os.path.basename(args.output))[0]
     if os.path.exists(args.output):
         raise SystemExit(f"[parallel] {args.output} already exists; pick a fresh name (rule o)")
+
+    # Spread the workers round-robin over the devices the allocator claimed. With one device
+    # (round 1: `--gpus 1`, 4 procs) every worker gets that same device, exactly as before.
+    devices = [d for d in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if d.strip()]
 
     procs, files, logs = [], [], []
     for i in range(args.procs):
@@ -92,13 +105,40 @@ def main() -> None:
         ]
         env = os.environ.copy()
         env["MIMIC_DATAGEN_SEED"] = str(args.seed_base + i)  # distinct RNG per worker
+        dev = devices[i % len(devices)] if devices else ""
+        if dev:
+            env["CUDA_VISIBLE_DEVICES"] = dev
         procs.append(subprocess.Popen(cmd, stdout=open(lg, "w"), stderr=subprocess.STDOUT, env=env))
-        print(f"[parallel] worker {i} pid {procs[-1].pid}: {per} successes -> {wf} (log {lg})", flush=True)
+        print(f"[parallel] worker {i} pid {procs[-1].pid}: {per} successes -> {wf} "
+              f"(gpu {dev or 'inherited'}, log {lg})", flush=True)
 
     t0 = time.monotonic()
+    stopped = False
+    if args.deadline_min > 0:
+        # Bounded foreground poll (AGENTS.md rule i). Only our own children are signalled
+        # (rule b: never by pattern); each flushes its HDF5 after every recorded episode, so
+        # what is on disk at the deadline is complete up to the last success.
+        budget = args.deadline_min * 60.0
+        while time.monotonic() - t0 < budget and any(q.poll() is None for q in procs):
+            time.sleep(10.0)
+        alive = [q for q in procs if q.poll() is None]
+        if alive:
+            stopped = True
+            print(f"[parallel] DEADLINE {args.deadline_min:g} min reached with {len(alive)} "
+                  f"worker(s) still running: stopping pids {[q.pid for q in alive]}", flush=True)
+            for q in alive:
+                q.terminate()
+            grace0 = time.monotonic()
+            while time.monotonic() - grace0 < 120.0 and any(q.poll() is None for q in alive):
+                time.sleep(5.0)
+            for q in alive:
+                if q.poll() is None:
+                    print(f"[parallel] worker pid {q.pid} ignored SIGTERM; SIGKILL", flush=True)
+                    q.kill()
     codes = [q.wait() for q in procs]
     dt = time.monotonic() - t0
-    print(f"[parallel] workers done in {dt/60:.1f} min, exit codes {codes}", flush=True)
+    print(f"[parallel] workers done in {dt/60:.1f} min, exit codes {codes}"
+          f"{' (deadline-stopped)' if stopped else ''}", flush=True)
 
     # aggregate success rate from worker logs ("S/T (P%) successful demos")
     succ = trials = 0

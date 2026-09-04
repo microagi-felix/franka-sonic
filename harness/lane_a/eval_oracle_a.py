@@ -177,6 +177,9 @@ def main() -> int:
     ap.add_argument("--max-delta-rad", type=float, default=joint_labels.DEFAULT_MAX_DELTA_RAD)
     ap.add_argument("--start-episode", type=int, default=None,
                     help="table offset (default: the run folder's completed episode count)")
+    ap.add_argument("--episode-indices", default=None,
+                    help="P7 WP 7.4: comma-separated indices into the loaded episode table; the "
+                         "replay table is restricted to exactly these, in this order (default: all)")
     ap.add_argument("--left-j1-offset-rad", type=float, default=0.0,
                     help="P5 tolerance test: constant offset added to the left arm's joint-1 target "
                          "(default 0 = the P1 protocol, unchanged)")
@@ -185,6 +188,15 @@ def main() -> int:
     oracle_a_table.EPISODES = load_episodes(known.demos, only_successful=not known.include_failed_replays,
                                             joint_label=known.joint_label, max_delta_rad=known.max_delta_rad,
                                             left_j1_offset_rad=known.left_j1_offset_rad)
+    if known.episode_indices:
+        picked = [int(v) for v in known.episode_indices.split(",") if v.strip() != ""]
+        n_loaded = len(oracle_a_table.EPISODES)
+        bad = [i for i in picked if not 0 <= i < n_loaded]
+        if bad:
+            sys.exit(f"[oracle-a] --episode-indices {bad} out of range (0..{n_loaded - 1})")
+        oracle_a_table.EPISODES = [oracle_a_table.EPISODES[i] for i in picked]
+        print(f"[oracle-a] episode subset {picked} of {n_loaded}: "
+              f"{[e['name'] for e in oracle_a_table.EPISODES]}", flush=True)
     if known.left_j1_offset_rad:
         print(f"[oracle-a] TOLERANCE TEST: left joint-1 targets offset by {known.left_j1_offset_rad:+.3f} rad",
               flush=True)
