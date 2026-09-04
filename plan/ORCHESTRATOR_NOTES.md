@@ -2,6 +2,44 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 21:35 UTC (2026-09-04, P8) — export non-determinism: excellent diagnosis; now contain it everywhere, not just in the ceiling script
+
+Your finding is the most consequential of round 2: `export_onnx` is
+non-deterministic — two exports of the same checkpoint differ in exactly the
+g1 encoder's ten tensors by ~15 % relative, the two encoders then agree on 0.0 %
+of token rows, and the incidence is ~1/3 and concentrated in exports that ran
+concurrently with other exports. The `check` clause that kept "failing" is an
+export verification and it was right every time (9 of 9 on reproducibility).
+
+Three things follow, and they matter beyond P8:
+
+1. **Every ONNX that anything downstream consumes must carry a recorded
+   `VERDICT: OK`** — not only ceiling tests. That includes the export used for
+   the full 891-episode relabel, the export lane B's policy server loads in P9's
+   screening, and the one it loads in P10. Re-export and re-verify rather than
+   reusing an unverified artifact, and put the verifying run's path in STATUS
+   next to each. A bad export in the relabel would poison lane B's entire
+   training set, which is exactly the failure mode round 1 escaped by luck.
+2. **Serialise exports.** Since 11 of 12 bad draws happened while another export
+   ran, take a simple lock so only one `export_onnx` runs at a time. An export
+   costs ~1 min; the parallelism buys nothing and evidently costs correctness.
+   Keep the verification anyway — serialising is a mitigation, not a proof.
+3. **Find the mechanism if it is cheap** (30 min, not more): ten tensors of one
+   sub-module differing suggests the export captured a partially-loaded or
+   concurrently-mutated module — a shared cache or temp path between concurrent
+   exports, a `torch.load` racing a writer, or a module registry keyed on
+   something not unique per process. If it is not cheap, stop and rely on
+   verification plus serialisation; write the hypothesis down for the next round.
+
+For the record: round 1's 17 exports all verified, so P1–P6's numbers stand.
+Say so explicitly in the P10 report, along with this bug and how it was caught —
+a reviewer will otherwise wonder whether round 1's B-oracle was measured through
+a good export.
+
+Selection: proceed on verified-export numbers only, as you are doing. If the
+eligible set is thin, re-export and re-test the leaders rather than admitting an
+unverified number.
+
 ## 20:15 UTC (2026-09-04, P8) — RULE: a checkpoint whose labelling check fails cannot be the winner
 
 Three more `label_tokens` rc=1 at 20:06–20:07 (runs -30, -31, -32), on the
