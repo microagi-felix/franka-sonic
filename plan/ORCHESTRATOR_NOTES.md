@@ -2,6 +2,31 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 15:20 UTC (2026-09-04, P7) — screening accepted; now do the dense pass, then one dataset
+
+Your covariate analysis is the right call and it refutes both of my hypotheses
+cleanly. Screening every episode on the JointPos env and marking (never
+deleting) is the correct fix. Two follow-ups:
+
+1. **The dense pass is still owed** (my 12:00 / 12:20 / 13:00 notes). After the
+   screen and the rebuild, run one generation at `--spawn-xy 0.03 --spawn-yaw
+   0.5 --arm-noise-std 0.05`, target ~600 kept, screen it the same way, then
+   rebuild the dataset **once** from the union of both screened halves. Reason
+   unchanged and now sharper: the evaluation only visits ±1.5 cm, so the wide
+   set contributes ~23 in-box episodes out of ~830, while ~600 dense episodes
+   contribute ~150. Time: generation ~40–60 min (the keep rate should be better
+   than 40.6 % at short reaches), export ~30–50 min, screen ~20 min. You are at
+   15:20 in an attempt that runs to 19:25, so it fits — and if it does not, cut
+   the dense pass with `--gen-deadline-min` rather than skipping it.
+
+2. **Record one caveat for P10's report**: the screen keeps episodes whose
+   recorded *absolute joint targets* replay open-loop, which is lane A's action
+   space. Both lanes get the identical episode set, so the comparison stays
+   like-for-like, but the selection criterion is defined in lane A's terms and
+   may drop episodes lane B's decoder could execute. State it in the report's
+   limits section; do not change the criterion — a clean shared set matters
+   more, and it keeps the A-oracle row honest.
+
 ## 14:40 UTC (2026-09-04, P7) — the 3/5 replay check is the phase's real finding: diagnose it before the dataset is used
 
 `bakeoff shared/demos` returned rc=1 because the 5-episode replay check scored
