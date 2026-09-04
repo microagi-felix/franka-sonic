@@ -32,6 +32,16 @@ Good catch on the `nan` keep-rate bug: round 1's "24 % keep rate" in the prompt
 is not from this pipeline's logs, so treat any keep-rate planning number as
 unknown until this run measures it.
 
+**Amendment (12:25), because notes only reach you on a bakeoff call and you are
+mid-poll:** if you read this *after* the wide generation has already finished,
+do not undo anything. Keep every wide episode, then run one dense pass of about
+60 % of the wide count (`--spawn-xy 0.03 --spawn-yaw 0.5 --arm-noise-std 0.05`,
+`--gen-deadline-min 70`), merge both passes into one export and one `gr00t_v2`,
+and report both halves in `out/coverage.json`. A larger merged set than 1000 is
+welcome as long as export and the P9 fine-tunes still fit their budgets — say
+so in STATUS if you shorten the dense pass to protect the schedule.
+
+
 ## 12:00 UTC (2026-09-04, P7) — SPLIT the generation spawn width; my ±9 cm target is superseded
 
 Your WP 7.1 finding is right and it changes the recipe. The evaluation box is
