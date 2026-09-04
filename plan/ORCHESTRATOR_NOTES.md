@@ -2,6 +2,68 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 00:05 UTC (2026-09-05, P9 + round-3 prep) — the failure is reach-then-stall, and the spawn box is 1.5 % of the training volume. Start the targeted generation now.
+
+**What both lanes actually do at checkpoint-2500** (I read the videos and the
+per-episode jsons): the left arm reaches the block in 85 % (A) / 95 % (B) of
+episodes, then **stalls over it and never closes the gripper** — every episode
+ends on `termination_reason: horizon` at 1500 steps, none on failure. Milestone
+2 ("left lifts") is where the whole thing dies: A 85/10/10/0/0/0, B
+95/25/20/5/0/0. Grippers are binary 0/1 in the dataset against the client's 0.5
+threshold, so the encoding is not the bug; images are 360x640 on both sides, so
+that is not it either. This is a precision failure at the grasp, which is the
+expected shape of an underfit policy at 12.5 % of its step budget — it is not
+evidence of a broken harness.
+
+**The structural finding, measured** (`shared/2026-09-04_demos/out/coverage.json`
+against `dual_stack_env_cfg._block_spawn_event`):
+
+| | training (891 eps) | evaluation |
+|---|---|---|
+| x half-range | 0.0893 m | 0.015 m |
+| y half-range | 0.0900 m | 0.015 m |
+| yaw half-range | 0.750 rad | 0.400 rad |
+
+The evaluated box is **1.5 % of the training spawn volume** (0.168 x 0.167 x
+0.533), i.e. **~13 of 891 episodes start where the policy is scored**. Round 1
+was worse in the same way (~4 of 76), so this is not a round-2 regression — but
+it is the clearest lever we have, and P7 dropped exactly this ("dense +/-3 cm
+pass") to protect the episode-count equality invariant. Widening the generation
+box was my call and it was right for robustness; the cost is that 98.5 % of the
+data trains a distribution nobody measures.
+
+### DO NOW — round-3 dataset, broad + targeted (this does not touch P9)
+
+Generate a **second, eval-matched demo set** alongside the running fine-tunes:
+
+- `MIMIC_SPAWN_XY=0.015 MIMIC_SPAWN_YAW=0.4 MIMIC_ARM_NOISE_STD=0.02` — the
+  evaluation box exactly, arm noise matched to the eval's 0.02 rad (the wide set
+  already carries 0.05 rad diversity, so the union keeps it).
+- 1024 episodes through the same P7 pipeline (sources -> annotate -> fixsignals
+  -> generate -> export -> replay), then `harness/data/jointpos_screen.py` on
+  every episode, exactly as P7 did. Expect ~890 to pass.
+- New run folder under `~/runs/franka-sonic/shared/`; **nothing about the P7 set
+  changes and nothing is deleted**.
+- Round 3 trains on the **union**: 891 wide + ~890 narrow, one dataset, both
+  lanes identical. Lane B relabels the union with the P8 decoder through a
+  **verified** export (P8 did 891 in 10 min).
+
+**Budget guard — P9 owns the node.** Baseline step times are **1.74 s/it (A)**
+and **1.42 s/it (B)**. Cap the generation at **2 GPUs** and pick the worker
+count so both stay under **2.00 / 1.65 s/it**; sample both every 10 min and
+halve the workers if either is over for two consecutive samples. If it cannot
+be kept under those numbers at any worker count, stop the generation and say so
+— P9's trainers have priority over round-3 prep, always.
+
+Detach it (`nohup setsid`) and record the pid/pgid and the run folder in
+STATUS: your session ends ~05:39 and attempt 2 must pick this up, not restart
+it. Screening and the two fine-tunes keep priority for devices at all times.
+
+### Also record, for the P10 report
+The reach-then-stall milestone profile and the 1.5 % spawn-overlap number
+belong in the report as the round-2 headline finding, whatever the final
+success counts are.
+
 ## 23:40 UTC (2026-09-04, P9/P10) — early stop OFF, 30k ceiling withdrawn, 22:50 oracle note withdrawn
 
 Read this one even if you read nothing else tonight. Three decisions, all mine,
