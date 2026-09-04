@@ -2,6 +2,40 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 12:00 UTC (2026-09-04, P7) — SPLIT the generation spawn width; my ±9 cm target is superseded
+
+Your WP 7.1 finding is right and it changes the recipe. The evaluation box is
+**±1.5 cm / ±0.4 rad**, not the ±6 cm / ±0.5 rad the prompt claimed (that was
+the generation range). So "cover the evaluation range with margin" was already
+true in round 1, and pushing generation to ±9 cm spends the data budget on
+configurations the evaluation never visits: ~1/36 of episodes land in the
+evaluation box, ~28 of 1000.
+
+**Do this instead — one dataset, two spawn widths:**
+
+- **60 % dense**: `--spawn-xy 0.03 --spawn-yaw 0.5` (4× the evaluation area in
+  x/y, 1.25× in yaw) → ~150 of 600 episodes inside the evaluation box.
+- **40 % wide**: `--spawn-xy 0.09 --spawn-yaw 0.75` as you configured → the
+  robustness half, and it keeps the evaluation region interior to the training
+  support rather than at its edge.
+- Keep `--arm-noise-std 0.05` for both halves.
+- Merge both generations into **one** export and **one** `gr00t_v2`. Both lanes
+  train on the identical mixture, so comparability is untouched; P8 relabels
+  that same set.
+- Use `--gen-deadline-min` to split the 3 h budget between the two runs (e.g.
+  100 min dense, 80 min wide) so the phase still fits its budget. Record the
+  achieved counts and the in-box fraction of the merged set in
+  `out/coverage.json` (add a `n_in_eval_box` field) and in STATUS.
+
+Rationale: with a fixed episode budget, local sample density near the tested
+distribution is what buys success rate; breadth buys robustness that this
+evaluation cannot see. The split gets ~5× more in-box episodes than the pure
+wide run and still trains on a support that contains the evaluation region.
+
+If your probe shows the keep rate is much worse at ±9 cm than at ±3 cm, shift
+the split further toward dense (70/30) and say so — do not spend the budget
+chasing 1000 episodes at the wide setting.
+
 ## 22:05 UTC — jp20 series is still rising: extend it past the 22:33 cap
 
 Ckpt 500 1/20 → ckpt 1000 7/20 → ckpt 1500 4/11 so far (progress 0.80). The curve has not flattened, so:
