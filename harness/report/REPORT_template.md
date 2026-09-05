@@ -128,6 +128,22 @@ curves, and they are the reason round 2 exists:
 - {{SELECTION_A}}
 - {{SELECTION_B}}
 
+**The evaluation is not deterministic given the seed**, and this is the single
+most useful thing round 2 measured about its own instrument. Each headline
+checkpoint has now been evaluated twice on the identical first twenty seeds —
+once as its screen, once as the first twenty episodes of its 200-rollout row —
+with the same binding, the same rate, the same replan period and the same
+horizon:
+
+- {{REPRO_A}}
+- {{REPRO_B}}
+
+GR00T N1.7 samples its actions, so a seed pins the spawn and not the rollout.
+Any two 20-rollout readings of one checkpoint therefore differ by more than
+binomial noise on a fixed success probability, which is why the screens rank
+checkpoints and nothing else, and why a screening number must never be quoted
+as a result.
+
 **Both lanes put their entire result in the last quarter of the run.** Each
 spends 60–75 % of a 20 000-step fine-tune at 0/20 and then acquires the whole
 task across one or two checkpoint intervals. Round 1 stopped both lanes at 2000

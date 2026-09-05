@@ -491,13 +491,13 @@ def rank_key(r: dict) -> tuple:
     return (r["n_success"], r["milestone_rates"][5], r["milestone_rates"][4], r["step"])
 
 
-def restrict(r: dict, first: int) -> dict:
+def restrict(r: dict, first: int, last: int | None = None) -> dict:
     """The same row recomputed over episodes with index >= `first`.
 
     The 20-rollout screens that chose each lane's checkpoint used seeds 0-19 of
     the same sequence the 200-rollout rows use, so episodes 0-19 of a row are
     the selection set and 20-199 are genuinely held out from it."""
-    eps = [e for e in r["episodes"] if e["episode"] >= first]
+    eps = [e for e in r["episodes"] if e["episode"] >= first and (last is None or e["episode"] < last)]
     n = len(eps)
     succ = [e for e in eps if e["success"]]
     out = dict(r)
@@ -1029,6 +1029,33 @@ def spread_sentence(label: str, entries: list[tuple[str, dict]]) -> str:
     )
 
 
+def repro_sentence(lane_label: str, screen: dict | None, row: dict | None, n_screen: int = SCREEN_ROLLOUTS) -> str:
+    """The same checkpoint on the same seeds, evaluated twice: once as the
+    20-rollout screen, once as the first 20 episodes of the 200-rollout row.
+    Both use seed 0 + episode index and the identical binding, so any gap is
+    the evaluation's own run-to-run variance -- GR00T N1.7 samples its actions,
+    so a seed does not pin a rollout."""
+    if screen is None or row is None:
+        return f"{lane_label}: not measurable (a screen or a row is missing)."
+    head = restrict(row, 0, n_screen)
+    if head["n"] == 0:
+        return f"{lane_label}: the row has no episodes below {n_screen}."
+    gap = screen["n_success"] - head["n_success"]
+    if gap == 0:
+        tail = "the two agree exactly"
+    else:
+        tail = (
+            f"they differ by {abs(gap)} episode{'s' if abs(gap) != 1 else ''} "
+            f"({abs(100 * (screen['success_rate'] - head['success_rate'])):.0f} points) "
+            "on identical seeds"
+        )
+    return (
+        f"{lane_label} `checkpoint-{screen['step']}` on episodes 0-{head['n'] - 1}: the screen "
+        f"scored {count_text(screen)}, the 200-rollout row scores {count_text(head)} on those "
+        f"same episodes — {tail}."
+    )
+
+
 def selection_sentence(lane_label: str, screens: dict[int, dict], picked: int, row: dict | None) -> str:
     """What the 20-rollout screen said about the chosen checkpoint versus what
     200 rollouts said about it. The screens select; they do not measure."""
@@ -1405,6 +1432,12 @@ def build(verbose: bool = True, rows: dict[str, Path] | None = None, held_out_fr
         ),
         "SELECTION_B": selection_sentence(
             "**Lane B**", screens["lane_b"], picked["lane_b"], lane_rows["lane_b"].get(picked["lane_b"])
+        ),
+        "REPRO_A": repro_sentence(
+            "**Lane A**", screens["lane_a"].get(picked["lane_a"]), lane_rows["lane_a"].get(picked["lane_a"])
+        ),
+        "REPRO_B": repro_sentence(
+            "**Lane B**", screens["lane_b"].get(picked["lane_b"]), lane_rows["lane_b"].get(picked["lane_b"])
         ),
         "SPREAD_A": spread_sentence("**Lane A**", lane_entries["lane_a"]),
         "SPREAD_B": spread_sentence("**Lane B**", lane_entries["lane_b"]),
