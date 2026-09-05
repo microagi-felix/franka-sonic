@@ -207,6 +207,28 @@ class JointPolicyServer:
         self.episode = 0
         self.requests = 0
         self.replans = 0
+        # P11 (2026-09-05): GR00T N1.7 samples its action chunk, and nothing here ever seeded
+        # the stream, so two runs of one checkpoint on identical spawns are two independent
+        # draws — measured spread on lane B checkpoint-10000: 16/20, 185/200, 7/20. --seed is
+        # OFF by default, so the evaluation binding is unchanged unless it is passed.
+        self.seed = getattr(args, "seed", None)
+        self._seed_rngs("startup")
+
+    def _seed_rngs(self, why: str) -> None:
+        """Seed every RNG the policy path can draw from, with seed + episode."""
+        if self.seed is None:
+            return
+        import random
+
+        import torch
+
+        s = int(self.seed) + self.episode
+        random.seed(s)
+        np.random.seed(s % (2**32))
+        torch.manual_seed(s)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(s)
+        print(f"[serve] seeded ({why}) episode={self.episode} seed={s}", flush=True)
 
     def _load_policy(self):
         config_path = Path(self.args.modality_config_path).expanduser().resolve()
@@ -272,6 +294,7 @@ class JointPolicyServer:
             self.chunk = None
             self.step_in_chunk = 0
             self.episode += 1
+            self._seed_rngs("reset")
             print(f"[serve] reset -> episode {self.episode}", flush=True)
             return {"ok": True, "episode": self.episode}
         if kind == "act":
@@ -361,6 +384,14 @@ def build_parser() -> argparse.ArgumentParser:
              "(wire tests on CPU)",
     )
     parser.add_argument("--log-every", type=int, default=50)
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="seed torch/numpy/random with <seed> + episode index at startup and at every "
+             "episode reset. OFF by default: rounds 1-3 ran unseeded, so leaving it unset "
+             "keeps the evaluation binding exactly as it was. Pass it to test whether the "
+             "run-to-run spread measured in P11 (one lane-B checkpoint scoring 16/20, "
+             "185/200 and 7/20) is the unseeded action sampler.",
+    )
     return parser
 
 
