@@ -191,6 +191,18 @@ def gate_needed(n: int) -> int:
     return math.ceil(OB_GATE_K / OB_GATE_N * n)
 
 
+def ceiling_state(ob: dict) -> str:
+    """"open" | "borderline" | "closed".
+
+    Gate P5's B-oracle criterion is a 15-of-20 threshold, i.e. 75 %. At n = 20 a
+    point estimate is all there is, but at larger n the criterion has to be
+    applied to the interval or a run that misses it by two episodes gets called
+    a failed ceiling on evidence that cannot tell 72 % from 76 %."""
+    if ob["n_success"] >= gate_needed(ob["n"]):
+        return "open"
+    return "borderline" if ob["ci95"][1] >= OB_GATE_K / OB_GATE_N else "closed"
+
+
 def gate_phrase(ob: dict) -> str:
     need = gate_needed(ob["n"])
     if ob["n"] == OB_GATE_N:
@@ -929,40 +941,53 @@ def headline_verdict(ra: dict, rb: dict, oa: dict, ob: dict) -> str:
     """The verdict sentence. Every branch is chosen by the counts, so the
     paragraph stays true whatever the rows say — including the branch where the
     two lanes cannot be told apart, which is a result and not a failure."""
-    need = gate_needed(ob["n"])
-    if ob["n_success"] >= need:
+    state = ceiling_state(ob)
+    common = (
+        "Replaying the encoder-labelled SONIC tokens through the decoder with no VLA in the "
+        f"loop succeeds {count_text(ob)} ({100 * ob['success_rate']:.1f} %, mean progress "
+        f"{ob['progress_mean']:.3f}, exact 95 % CI {ci_text(ob)})"
+    )
+    if state == "open":
         head = (
-            "**The B-oracle ceiling is open.** Replaying the encoder-labelled SONIC tokens "
-            f"through the decoder with no VLA in the loop succeeds {count_text(ob)} "
-            f"({100 * ob['success_rate']:.1f} %, mean progress {ob['progress_mean']:.3f}), at "
-            f"or above {gate_phrase(ob)}. Lane "
+            f"**The B-oracle ceiling is open.** {common}, at or above {gate_phrase(ob)}. Lane "
             f"B's {count_text(rb)} therefore measures the VLA over the token space rather "
             "than a controller that cannot execute its own labels, and can be read next to "
             f"lane A's {count_text(ra)} — though it is bounded by that ceiling and lane A's "
             f"is bounded by the A-oracle's {count_text(oa)}, which are not the same height."
         )
+    elif state == "borderline":
+        head = (
+            f"**The B-oracle ceiling is open, but it is not the A-oracle's.** {common} — below "
+            f"{gate_phrase(ob)}, though its interval covers that criterion, so the ceiling is "
+            + ("It is below the A-oracle's " if overlap(oa["ci95"], ob["ci95"]) else
+               "It is measurably below the A-oracle's ") + f"{count_text(oa)}"
+            + ("" if overlap(oa["ci95"], ob["ci95"]) else " — those two intervals do not overlap") + ". "
+            f"Lane B's {count_text(rb)} is therefore a VLA number, read against a ceiling "
+            f"roughly {100 * (oa['success_rate'] - ob['success_rate']):.0f} points lower than "
+            "lane A's: the decoder executes most of the labels its own encoder wrote, not all "
+            "of them, and every lane-B episode is played through that handicap."
+        )
     else:
         head = (
-            "**The B-oracle ceiling is closed.** Replaying the encoder-labelled SONIC tokens "
-            f"through the decoder with no VLA in the loop succeeds {count_text(ob)} "
-            f"({100 * ob['success_rate']:.1f} %, mean progress {ob['progress_mean']:.3f}), "
-            f"below {gate_phrase(ob)} and below "
+            f"**The B-oracle ceiling is closed.** {common}, below {gate_phrase(ob)} and below "
             f"the A-oracle's {count_text(oa)}. Lane B's {count_text(rb)} therefore cannot be "
             "read as a VLA number: the controller under it misses the task on the recorded "
             "spawns with no VLA in the loop at all."
         )
-    delta = abs(ra["n_success"] - rb["n_success"])
     pts = abs(100 * ra["success_rate"] - 100 * rb["success_rate"])
-    if delta == 0:
-        cmp_head = f"The two headline rows are level at {count_text(ra)}"
-        winner = "Neither lane won"
+    cmp_head = (
+        f"The two headline rows are lane A {count_text(ra)} ({100 * ra['success_rate']:.1f} %) "
+        f"and lane B {count_text(rb)} ({100 * rb['success_rate']:.1f} %)"
+    )
+    if ra["n_success"] == rb["n_success"] and ra["n"] == rb["n"]:
+        winner = "Neither lane won: the two counts are identical"
+    elif abs(ra["success_rate"] - rb["success_rate"]) < 1e-12:
+        winner = "Neither lane won: the two rates are identical"
     else:
-        higher = "Lane A" if ra["n_success"] > rb["n_success"] else "Lane B"
-        cmp_head = (
-            f"The two headline rows are lane A {count_text(ra)} ({100 * ra['success_rate']:.1f} %) "
-            f"and lane B {count_text(rb)} ({100 * rb['success_rate']:.1f} %)"
-        )
-        winner = f"{higher} scored higher, by {delta} episodes = {pts:.1f} points"
+        higher = "Lane A" if ra["success_rate"] > rb["success_rate"] else "Lane B"
+        winner = f"{higher} scored higher, by {pts:.1f} points"
+        if ra["n"] == rb["n"]:
+            winner += f" = {abs(ra['n_success'] - rb['n_success'])} episodes of {ra['n']}"
     if overlap(ra["ci95"], rb["ci95"]):
         sep = (
             f"**do overlap**, so n = {ra['n']} does not separate the two lanes: the gap is "
@@ -991,11 +1016,16 @@ def spread_sentence(label: str, entries: list[tuple[str, dict]]) -> str:
     best = max(entries, key=lambda kv: kv[1]["n_success"])
     worst = min(entries, key=lambda kv: kv[1]["n_success"])
     span = best[1]["n_success"] - worst[1]["n_success"]
-    parts = ", ".join(f"{k} {count_text(v)}" for k, v in entries)
+    def short(k: str) -> str:
+        return k.split("`")[1] if "`" in k else k
+
+    parts = ", ".join(f"{short(k)} {count_text(v)}" for k, v in entries)
+    ns = {v["n"] for _k, v in entries}
+    where = f"all measured at n = {ns.pop()}" if len(ns) == 1 else "measured at the n shown"
     return (
-        f"{label}: {parts} — a spread of {span} episodes "
-        f"({100 * (best[1]['success_rate'] - worst[1]['success_rate']):.1f} points) across "
-        f"{len(entries)} checkpoints of one training run, all measured at n = {best[1]['n']}."
+        f"{label}: {parts} — a spread of "
+        f"{100 * (best[1]['success_rate'] - worst[1]['success_rate']):.1f} points across "
+        f"{len(entries)} checkpoints of one training run, {where}."
     )
 
 
@@ -1081,27 +1111,38 @@ def milestone_reading(results: dict) -> str:
 
 
 def ob_verdict(ob: dict, oa: dict) -> str:
-    need = gate_needed(ob["n"])
+    state = ceiling_state(ob)
     gap = 100 * ((oa["success_rate"] if oa["n"] else 0.0) - ob["success_rate"])
-    if ob["n_success"] >= need:
+    stem = (
+        f"{count_text(ob)} ({100 * ob['success_rate']:.1f} %, mean progress "
+        f"{ob['progress_mean']:.3f}, 95 % CI {ci_text(ob)})"
+    )
+    if state == "open":
         return (
-            f"It is open: {count_text(ob)} ({100 * ob['success_rate']:.0f} %, mean progress "
-            f"{ob['progress_mean']:.3f}), at or above {gate_phrase(ob)} "
-            f"and {gap:.0f} points from the A-oracle's {count_text(oa)}. The "
-            "decoder that lane B's policy server runs executes the labels its own encoder "
-            "wrote."
+            f"It is open: {stem}, at or above {gate_phrase(ob)} and {gap:.0f} points from the "
+            f"A-oracle's {count_text(oa)}. The decoder that lane B's policy server runs "
+            "executes the labels its own encoder wrote."
+        )
+    if state == "borderline":
+        return (
+            f"It is open but lower than lane A's: {stem}. That is below {gate_phrase(ob)}, "
+            "though the interval covers the criterion, so the ceiling is not measurably below "
+            f"it; it is {gap:.0f} points below the A-oracle's {count_text(oa)}"
+            + (", a gap this n does not resolve. " if overlap(oa["ci95"], ob["ci95"])
+               else ", and that gap is larger than sampling explains (the intervals do not "
+                    "overlap). ")
+            + "Lane B's policy plays every episode through a decoder that drops roughly "
+            f"one episode in {1 / max(1e-9, 1 - ob['success_rate']):.0f} on its own labels."
         )
     return (
-        f"It is closed: {count_text(ob)} ({100 * ob['success_rate']:.0f} %, mean progress "
-        f"{ob['progress_mean']:.3f}), below {gate_phrase(ob)} "
-        f"and {gap:.0f} points from the A-oracle's {count_text(oa)}. The decoder "
-        "does not execute the labels its own encoder wrote, which caps lane B before the VLA "
-        "is asked anything."
+        f"It is closed: {stem}, below {gate_phrase(ob)} and {gap:.0f} points from the "
+        f"A-oracle's {count_text(oa)}. The decoder does not execute the labels its own encoder "
+        "wrote, which caps lane B before the VLA is asked anything."
     )
 
 
 def b_verdict(ra: dict, rb: dict, ob: dict) -> str:
-    if ob["n_success"] >= gate_needed(ob["n"]):
+    if ceiling_state(ob) in ("open", "borderline"):
         return (
             f"**Lane B's {count_text(rb)} is therefore readable as a VLA number.** With the "
             f"ceiling at {count_text(ob)}, lane B's row measures GR00T over the token space "
@@ -1320,6 +1361,7 @@ def build(verbose: bool = True, rows: dict[str, Path] | None = None, held_out_fr
         "OA_MIN_STEPS": str(min(oa["steps_to_success"])) if oa["steps_to_success"] else "n/a",
         "OA_MAX_STEPS": str(max(oa["steps_to_success"])) if oa["steps_to_success"] else "n/a",
         "N_ROLLOUTS": str(n),
+        "N_LAST": str(max(0, n - 1)),
         "HEADLINE_VERDICT": headline_verdict(ra, rb, oa, ob),
         "CI_SENTENCE": ci_sentence(results),
         "M1_NOTE": m1_note(results),
