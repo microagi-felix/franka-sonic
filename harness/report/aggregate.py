@@ -399,8 +399,43 @@ def load_eval(d: Path) -> dict:
     }
 
 
-def lane_gpu_rows(lane: str) -> list[dict]:
-    return [folder_timing(p) for p in run_folders(lane)]
+def live_run_folders() -> set[str]:
+    """Run-folder names that currently hold a GPU claim, i.e. runs that have not
+    finished. The allocator keys each claim `<lane>-<stage>-<run folder>` and
+    prunes claims whose pid is gone, so this is a measurement of "still
+    running", not a guess. A missing or unreadable file means no exclusions."""
+    pool = read_json(Path(os.path.expanduser("~/runs/franka-sonic/gpus.json"))) or {}
+    out = set()
+    for job, claim in (pool.get("claims") or {}).items():
+        pid = claim.get("pid")
+        try:
+            if pid:
+                os.kill(int(pid), 0)
+        except (OSError, ValueError):
+            continue
+        parts = job.split("-", 2)
+        if len(parts) == 3:
+            out.add(parts[2])
+    return out
+
+
+def lane_gpu_rows(lane: str, as_of: dt.datetime | None = None) -> list[dict]:
+    """Timing for every run folder of a lane that had already started by `as_of`.
+
+    The cutoff matters: this report is a snapshot taken when its last row
+    finished, and the next round's fine-tunes can already be running by then --
+    on 2026-09-05 they started at 10:31, while P10's last rows had another hour
+    to go. Counting them would charge round 2 for round 3's GPU time."""
+    live = live_run_folders()
+    out = []
+    for p in run_folders(lane):
+        if p.name in live:  # still running: not this report's work
+            continue
+        t = folder_timing(p)
+        if as_of is not None and t["start"] is not None and t["start"] > as_of:
+            continue
+        out.append(t)
+    return out
 
 
 # --------------------------------------------------------------------------- round 2 discovery
@@ -522,13 +557,22 @@ def restrict(r: dict, first: int, last: int | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------- parity
-def finetune_command(lane: str) -> tuple[Path | None, dict | None, str | None]:
-    """Newest <lane>/<date>_finetune folder -> (folder, parsed torchrun args, raw line)."""
-    cands = [p for p in run_folders(lane) if folder_stage(p) == "finetune" and (p / "cmd.sh").is_file()]
-    if not cands:
-        return None, None, None
-    cands.sort(key=lambda p: (folder_timing(p)["end"] or dt.datetime.min.replace(tzinfo=dt.timezone.utc), p.name))
-    d = cands[-1]
+def finetune_command(lane: str, d: Path | None = None) -> tuple[Path | None, dict | None, str | None]:
+    """(folder, parsed torchrun args, raw line) for a fine-tune run.
+
+    `d` pins the folder. Callers should pin it, and pin it to the run that
+    produced the checkpoint the reported row measured: the fallback below takes
+    the newest folder, which silently becomes the *next* round's fine-tune the
+    moment one starts -- it did, at 10:31 on 2026-09-05, while P10's rows were
+    still finishing."""
+    if d is None:
+        cands = [p for p in run_folders(lane) if folder_stage(p) == "finetune" and (p / "cmd.sh").is_file()]
+        if not cands:
+            return None, None, None
+        cands.sort(key=lambda p: (folder_timing(p)["end"] or dt.datetime.min.replace(tzinfo=dt.timezone.utc), p.name))
+        d = cands[-1]
+    if not (d / "cmd.sh").is_file():
+        return d, None, None
     # Join backslash continuations first: round 2's cmd.sh wraps the torchrun
     # invocation over ten lines, so matching raw lines would hand shlex a
     # dangling backslash (and only a fragment of the command).
@@ -623,6 +667,35 @@ def loss_series(d: Path | None, every: int = 2500) -> str:
         e = min(near, key=lambda e: abs(int(e.get("step", 0)) - target))
         picked.append(f"{target}: {float(e['loss']):.4f}")
     return ", ".join(picked) if picked else NOT_RECORDED
+
+
+def loss_trend(pairs: list[tuple[str, Path | None]], every: int = 2500) -> str:
+    """What the sampled loss curves actually do, per lane. Asserting "it falls
+    steadily" would be prose making a claim the numbers can contradict."""
+    parts = []
+    for label, d in pairs:
+        ckpt = last_checkpoint(d)
+        state = read_json(ckpt / "trainer_state.json") if ckpt else None
+        hist = [e for e in (state or {}).get("log_history", []) if isinstance(e, dict) and "loss" in e]
+        vals = []
+        for target in range(every, 10**9, every):
+            near = [e for e in hist if abs(int(e.get("step", 0)) - target) <= every // 10]
+            if not near:
+                break
+            vals.append(float(min(near, key=lambda e: abs(int(e.get("step", 0)) - target))["loss"]))
+        if len(vals) < 2:
+            parts.append(f"{label}: not recorded")
+            continue
+        drop = 100 * (1 - vals[-1] / vals[0]) if vals[0] else 0.0
+        rises = sum(1 for a, b in zip(vals, vals[1:]) if b > a)
+        tail = "and its last sample is below its previous one" if vals[-1] <= vals[-2] else (
+            f"though its last sample rises from {vals[-2]:.4f} to {vals[-1]:.4f}"
+        )
+        parts.append(
+            f"{label} falls {drop:.0f} % from {vals[0]:.4f} to {vals[-1]:.4f} over "
+            f"{len(vals)} samples with {rises} step{'s' if rises != 1 else ''} up, {tail}"
+        )
+    return "; ".join(parts) + "."
 
 
 def modality_summary(path: Path) -> dict:
@@ -913,15 +986,14 @@ def screen_table(screens: dict[str, dict[int, dict]]) -> str:
     return md_table(header, rows)
 
 
-def stage_hours(lane: str) -> tuple[str, float]:
+def stage_hours(lane: str, as_of: dt.datetime | None = None) -> tuple[str, float]:
     """GPU-hours of a lane grouped by stage, so 'lane B's SONIC RL is counted
     in' is a number a reader can check rather than a claim."""
     per: dict[str, list[float]] = collections.defaultdict(list)
-    for p in run_folders(lane):
-        t = folder_timing(p)
+    for t in lane_gpu_rows(lane, as_of):
         if t["gpu_hours"] is None:
             continue
-        per[folder_stage(p)].append(t["gpu_hours"])
+        per[folder_stage(t["dir"])].append(t["gpu_hours"])
     total = sum(sum(v) for v in per.values())
     rows = []
     for stage in sorted(per, key=lambda s: -sum(per[s])):
@@ -959,6 +1031,7 @@ def headline_verdict(ra: dict, rb: dict, oa: dict, ob: dict) -> str:
         head = (
             f"**The B-oracle ceiling is open, but it is not the A-oracle's.** {common} — below "
             f"{gate_phrase(ob)}, though its interval covers that criterion, so the ceiling is "
+            "not measurably below the criterion itself. "
             + ("It is below the A-oracle's " if overlap(oa["ci95"], ob["ci95"]) else
                "It is measurably below the A-oracle's ") + f"{count_text(oa)}"
             + ("" if overlap(oa["ci95"], ob["ci95"]) else " — those two intervals do not overlap") + ". "
@@ -1137,6 +1210,89 @@ def milestone_reading(results: dict) -> str:
     return "\n".join(lines)
 
 
+def failure_stages(r: dict) -> str:
+    """Where a row's failures stop, keyed by the deepest milestone they reached.
+    Milestone k is the last one passed, so a failure counted at k died trying to
+    do k+1."""
+    fails = [e for e in r["episodes"] if not e["success"]]
+    if not fails:
+        return f"it has no failures in {r['n']} episodes"
+    tally = collections.Counter(e["reached"] for e in fails)
+    parts = []
+    for reached, cnt in sorted(tally.items()):
+        if reached <= 0:
+            parts.append(f"**{cnt}** reach no milestone at all")
+        elif reached >= len(MILESTONES):
+            parts.append(f"**{cnt}** reach all six milestones without a confirmed success")
+        else:
+            parts.append(
+                f"**{cnt}** stop after milestone {reached} ({MILESTONES[reached - 1]}), "
+                f"i.e. fail at {MILESTONES[reached]}"
+            )
+    return f"of its {len(fails)} failures in {r['n']} episodes, " + ", ".join(parts)
+
+
+def failure_shape(ra: dict, rb: dict, ob: dict) -> str:
+    """The qualitative difference between the two lanes' failures, computed.
+    Where a policy dies says more about its interface than the success count."""
+    def zero(r):
+        return sum(1 for e in r["episodes"] if not e["success"] and e["reached"] <= 0)
+
+    def modal(r):
+        fails = [e for e in r["episodes"] if not e["success"]]
+        if not fails:
+            return None, 0
+        k, c = collections.Counter(e["reached"] for e in fails).most_common(1)[0]
+        return k, c
+
+    za, zb = zero(ra), zero(rb)
+    ka, ca = modal(ra)
+    kb, cb = modal(rb)
+    kob, _cob = modal(ob)
+
+    def stage(k):
+        if k is None:
+            return "nothing"
+        if k <= 0:
+            return "before milestone 1 (left reaches)"
+        if k >= len(MILESTONES):
+            return "after all six milestones"
+        return f"at milestone {k + 1} ({MILESTONES[k]})"
+
+    lead = (
+        f"**Lane A fails {za} of its {ra['n']} episodes without reaching milestone 1 at all; "
+        f"lane B fails {zb}.**"
+        if za != zb
+        else f"Both lanes fail {za} episodes without reaching milestone 1."
+    )
+    if za > zb:
+        gloss = (
+            "Lane A's largest single failure mode is therefore the arm's very first move, not "
+            "the handover — the failure round 1 diagnosed as the policy copying the labels' "
+            "saturated first-chunk differential-IK commands, which throw the arm into a pose it "
+            "never recovers from. That mode is a property of lane A's label, and it is still "
+            "there after 20 000 steps."
+        )
+    elif zb > za:
+        gloss = (
+            "Lane B's largest single failure mode is therefore the arm's very first move — the "
+            "decoder's at-rest start transient, the residual mode P5 identified and only "
+            "partly fixed."
+        )
+    else:
+        gloss = "Neither lane's failures concentrate at the first move more than the other's."
+    match = (
+        f"Lane B's most common failure stage is {stage(kb)} ({cb} episodes), the same stage its "
+        f"own B-oracle loses most of its episodes at — so that part of lane B's gap is the "
+        "decoder's, not the VLA's."
+        if kb == kob
+        else
+        f"Lane B's most common failure stage is {stage(kb)} ({cb} episodes) while its own "
+        f"B-oracle's is {stage(kob)}, so lane B's dominant failure is not simply its decoder's."
+    )
+    return f"{lead} {gloss} Lane A's most common failure stage is {stage(ka)} ({ca} episodes). {match}"
+
+
 def ob_verdict(ob: dict, oa: dict) -> str:
     state = ceiling_state(ob)
     gap = 100 * ((oa["success_rate"] if oa["n"] else 0.0) - ob["success_rate"])
@@ -1234,15 +1390,32 @@ def build(verbose: bool = True, rows: dict[str, Path] | None = None, held_out_fr
     if missing:
         raise SystemExit("[aggregate] MISSING eval run folder(s): " + "; ".join(missing))
 
+    # Snapshot cutoff: the latest finalisation stamp among the four reported
+    # rows. Anything that started after it is the next round's, not this one's.
+    as_of = max(
+        (r["timing"]["end"] for r in results.values() if r["timing"]["end"]),
+        default=None,
+    )
+    if verbose:
+        print(f"[aggregate] GPU-hour cutoff (as-of) {as_of}", file=sys.stderr)
     lane_hours = {}
     gpu_tables = {}
     for lane in ("shared", "lane_a", "lane_b"):
-        table, info = gpu_table(lane, lane_gpu_rows(lane))
+        table, info = gpu_table(lane, lane_gpu_rows(lane, as_of))
         gpu_tables[lane] = table
         lane_hours[lane] = info
 
-    ft_a_dir, ft_a, ft_a_line = finetune_command("lane_a")
-    ft_b_dir, ft_b, ft_b_line = finetune_command("lane_b")
+    def ft_of_row(r: dict) -> Path | None:
+        """The fine-tune run folder that produced the checkpoint this row
+        measured, read from the row's own bakeoff stamp."""
+        ck = ((r["cfg"] or {}).get("args") or {}).get("checkpoint") or ""
+        d = Path(ck).parents[2] if ck else None
+        return d if (d is not None and d.is_dir()) else None
+
+    ft_a_dir, ft_a, ft_a_line = finetune_command("lane_a", ft_of_row(results["lane_a_policy"]))
+    ft_b_dir, ft_b, ft_b_line = finetune_command("lane_b", ft_of_row(results["lane_b_policy"]))
+    if verbose:
+        print(f"[aggregate] fine-tune folders  A <- {ft_a_dir}   B <- {ft_b_dir}", file=sys.stderr)
     parity, diffs = parity_table(ft_a, ft_b)
     mod_a = modality_summary(REPO / "harness" / "lane_a" / "modality_config_dual_fr3.py")
     mod_b = modality_summary(REPO / "harness" / "lane_b" / "modality_config_dual_fr3_sonic.py")
@@ -1340,9 +1513,9 @@ def build(verbose: bool = True, rows: dict[str, Path] | None = None, held_out_fr
             "when quoting it.**"
         )
 
-    stage_a, hours_a = stage_hours("lane_a")
-    stage_b, hours_b = stage_hours("lane_b")
-    stage_sh, hours_sh = stage_hours("shared")
+    stage_a, hours_a = stage_hours("lane_a", as_of)
+    stage_b, hours_b = stage_hours("lane_b", as_of)
+    stage_sh, hours_sh = stage_hours("shared", as_of)
 
     subs = {
         "GENERATED": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
@@ -1394,6 +1567,11 @@ def build(verbose: bool = True, rows: dict[str, Path] | None = None, held_out_fr
         "M1_NOTE": m1_note(results),
         "MILESTONE_READING": milestone_reading(results),
         "OB_VERDICT": ob_verdict(ob, oa),
+        "FAILURE_SHAPE": failure_shape(ra, rb, ob),
+        "OB_FAILURES": failure_stages(ob),
+        "OA_FAILURES": failure_stages(oa),
+        "A_FAILURES": failure_stages(ra),
+        "B_FAILURES": failure_stages(rb),
         "B_VERDICT": b_verdict(ra, rb, ob),
         "GPU_TABLE_SHARED": gpu_tables["shared"],
         "GPU_TABLE_A": gpu_tables["lane_a"],
@@ -1453,6 +1631,11 @@ def build(verbose: bool = True, rows: dict[str, Path] | None = None, held_out_fr
         "STAGE_TOTAL_A": f"{hours_a:.2f}",
         "STAGE_TOTAL_B": f"{hours_b:.2f}",
         "STAGE_TOTAL_SHARED": f"{hours_sh:.2f}",
+        "AS_OF": (as_of.strftime("%Y-%m-%d %H:%M UTC") if as_of else NOT_RECORDED),
+        "EXCLUDED_LIVE": (
+            ", ".join(f"`{name}`" for name in sorted(live_run_folders())) or "none"
+        ),
+        "LOSS_TREND": loss_trend([("Lane A", ft_a_dir), ("lane B", ft_b_dir)]),
         "LOSS_SERIES_A": loss_series(ft_a_dir),
         "LOSS_SERIES_B": loss_series(ft_b_dir),
         "A_CKPT": f"checkpoint-{row_step(ra)}" if row_step(ra) else NOT_RECORDED,

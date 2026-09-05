@@ -156,12 +156,15 @@ Training loss sampled every 2500 steps, from the last checkpoint's
 - lane A: {{LOSS_SERIES_A}} (last logged {{FT_A_LOSS}})
 - lane B: {{LOSS_SERIES_B}} (last logged {{FT_B_LOSS}})
 
-The loss falls steadily to the end of the cosine schedule with no plateau, in
-both lanes, while success switches on across a single checkpoint interval. The
-honest reading is that **success is a threshold on this loss, both lanes were
-still improving when the budget ran out, and round 2 therefore compares two
-under-trained policies** — which is what round 3 (P11) exists to address, not
-something this report can resolve.
+Measured, rather than asserted: {{LOSS_TREND}} There is no plateau in either
+curve — the fall continues into the last quarter, where all the successes are —
+but neither curve is monotone, so "still improving at the budget" is a statement
+about the trend and not about every adjacent pair. The honest reading is that
+**success is a threshold on this loss, both lanes were still descending when the
+budget ran out, and round 2 therefore compares two under-trained policies** —
+which is what round 3 (P11) exists to address, not something this report can
+resolve. Note also that the loss cannot be compared *across* lanes: the two
+numbers are over different action spaces.
 
 **The early stop that was disabled.** WP 9.3 specified a
 stop-on-two-non-improving-screens rule. It was turned off by the orchestrator
@@ -212,10 +215,20 @@ handovers" (the absolute column) or "which VLA learned more of what its
 interface allows" (the ÷ ceiling column). This report gives both and asserts
 neither as *the* answer.
 
-Where the B-oracle loses its episodes is the useful part: **25 of its failures
-are at the first grasp, 29 at the second, 1 at milestone 0** — decoder
-arm-position error at the grasp instant, not a gripper or timing problem (the
-grippers bypass the decoder entirely). P5 measured the tolerance directly: the
+Where each row loses its episodes is the useful part — counted from the episode
+JSONs, by the deepest milestone each failing episode reached:
+
+- **B-oracle**: {{OB_FAILURES}}. Both clusters are grasps, and the decoder is
+  what differs from lane A there: this is decoder arm-position error at the
+  grasp instant, not a gripper or timing problem, because the grippers bypass
+  the decoder entirely and take their command from the dataset's binary labels.
+- **A-oracle**: {{OA_FAILURES}}.
+- **Lane A ({{A_CKPT}})**: {{A_FAILURES}}.
+- **Lane B ({{B_CKPT}})**: {{B_FAILURES}}.
+
+{{FAILURE_SHAPE}}
+
+P5 measured the grasp tolerance directly: the
 A-oracle with a constant offset added to the left joint-1 target scores 20/20 at
 +0.02 rad (≈ 1.2 cm at the hand), 17/20 at +0.05 rad (≈ 3 cm) and 0/20 at
 +0.10 rad (≈ 6 cm). The right arm's blind re-grasp of the cube the left arm
@@ -289,7 +302,12 @@ for all rows.
 
 Per-stage GPU-hours over the whole campaign (rounds 1 and 2 together), derived
 from run-folder timestamps and device lists only — appendix A has the per-folder
-detail and the rule.
+detail and the rule. **Snapshot cutoff {{AS_OF}}**, the finalisation stamp of the
+last row in this report: run folders that started after it are excluded, because
+round 3's two fine-tunes were already running on this pod before round 2's last
+rollout finished and charging them to round 2 would be wrong. Run folders
+excluded because they still held a GPU claim when this report was generated,
+i.e. had not finished: {{EXCLUDED_LIVE}}.
 
 Shared demo pipeline, common to both lanes — {{STAGE_TOTAL_SHARED}} GPU-h:
 
