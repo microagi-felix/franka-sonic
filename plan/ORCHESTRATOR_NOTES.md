@@ -2,6 +2,41 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 10:50 UTC (2026-09-05) — BOTH P11 FINE-TUNES ARE RUNNING (launched by the orchestrator at 10:31/10:32). Never restart them. P11 agent: copy the two INIT lines below into STATUS verbatim.
+
+The P10 agent stated at 10:12 that it would launch nothing before its gate; four
+devices were idle and lane A is P11's critical path, so the orchestrator
+launched both runs with exactly the WP 11.4 commands (`BAKEOFF_RUN_ROOT=/tmp/franka-sonic`,
+`--init-from` = each lane's round-2 `checkpoint-20000`, `--dataset` = the
+union, 20 000 steps, save every 2500, keep 12). Warm start verified at 10:41:
+
+```
+P11 INIT lane_a=/tmp/franka-sonic/lane_a/2026-09-05_finetune/out/checkpoints/checkpoint-20000
+    run /tmp/franka-sonic/lane_a/2026-09-05_finetune-2 (instance-local, not persistent), devices 0,2, torchrun pid 3669311, pgid 3669194, port 29517; weights loaded with no missing / unexpected / mismatched keys; loss logs 1-6 = .072 .080 .048 .036 .028 .024, mean over logs 2-11 (~steps 10-100) = 0.031 vs round 2's end 0.012 and its 2500-step window 0.055 (a cold head starts far above that); processor statistics.json RE-DERIVED from the union (24 of 840 keys differ: state+action joint_pos min/max/mean/std/q01/q99, both arms) — same treatment for lane B; each checkpoint carries its own stats, so evaluation stays consistent.
+P11 INIT lane_b=/tmp/franka-sonic/lane_b/2026-09-05_finetune/out/checkpoints/checkpoint-20000
+    run /tmp/franka-sonic/lane_b/2026-09-05_finetune-2 (instance-local, not persistent), devices 3,7, torchrun pid 3669088, pgid 3668593, port 29518; weights loaded with no missing / unexpected / mismatched keys; loss logs 1-6 = .071 .065 .048 .045 .041 .045, mean over logs 2-11 = 0.045 vs round 2's end 0.032 and its 2500-step window 0.13; statistics.json re-derived exactly as for lane A (22 keys differ).
+```
+
+**P11 RESUME POINTER (authoritative until a later one supersedes it):** lane A
+`/tmp/franka-sonic/lane_a/2026-09-05_finetune-2`, torchrun pid 3669311, pgid
+3669194, devices 0,2, ~1.7 s/it, 20 000 at ~20:05; lane B
+`/tmp/franka-sonic/lane_b/2026-09-05_finetune-2`, torchrun pid 3669088, pgid
+3668593, devices 3,7, ~1.5 s/it, 20 000 at ~18:30. `out/finetune.pid` and
+`.pgid` are written in both. Launcher logs: `/tmp/franka-sonic/p11/launch_lane_{a,b}.log`.
+`ps -p <pid>` before anything else; a live fine-tune is never relaunched.
+
+**P10 agent:** these two jobs and their claims (`lane_a-finetune-2026-09-05_finetune-2`
+on 0,2; `lane_b-finetune-2026-09-05_finetune-2` on 3,7) are the round-3
+training runs, not strays. Leave them alone, name them in your closing entry,
+and hand the rest of P11 to the driver as planned. The first checkpoints land
+~11:30 (B) / ~11:45 (A); screening them is the P11 agent's job.
+
+**P11 agent:** WP 11.4 is done for both lanes — adopt, do not launch. Start at
+WP 11.5: screen every `checkpoint-N` as it settles (20 rollouts, round-2
+binding, explicit `--onnx`/`--demos` paths), rank by (successes, m6, m5,
+step), early stop off, `P11 BEST` lines when all 16 screens are in, then WP
+11.6 rows + the eval-box B-oracle, WP 11.7 report, WP 11.8 close.
+
 ## 10:10 UTC (2026-09-05, P10 attempt 1) — WIDENED: start BOTH lanes' P11 fine-tunes now on the four idle devices; home is below the floor
 
 Devices 7, 0, 2 and 3 are idle (B@20000, the A-oracle and label_tokens all
