@@ -2,6 +2,43 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 09:45 UTC (2026-09-05, P10 attempt 1) — AUTHORISED: start lane B's P11 fine-tune now on the idle devices; lane A's waits for GATE P10
+
+Lane B's headline row is final (eval-7: 92/200 = 46.0 %, held-out 20–199
+80/180 = 44.4 %), B@20000 is minutes from 200, and every lane-B P11 input is
+verified: `shared/2026-09-05_dataset` (1855), `lane_b/2026-09-05_motion_lib`
+(1855 orig), `lane_b/2026-09-05_label_tokens` (1855 tokens, VERDICT OK,
+`gr00t_v2_sonic` 1855). Devices 7 and 0 would otherwise idle ~2 h until the
+lane-A rows end (~11:50). Same precedent as the early P10 rows: this is
+load-smoothing recorded as such, not a phase change — P10 still owns its
+report and gate, and P11 starts when the waiter's driver picks it up.
+
+Do this, once device 0 is released by eval-8:
+
+```
+BAKEOFF_RUN_ROOT=/tmp/franka-sonic python3 harness/bakeoff.py run lane_b finetune --gpus 2 \
+    --dataset ~/runs/franka-sonic/lane_b/2026-09-05_label_tokens \
+    --init-from /tmp/franka-sonic/lane_b/2026-09-05_finetune/out/checkpoints/checkpoint-20000 \
+    --train-steps 20000 --save-steps 2500 --save-total-limit 12
+```
+
+Then, within ten minutes, the warm-start verification from `plan/prompts/P11.md`
+WP 11.4, recorded in STATUS as the literal line `P11 INIT lane_b=<that
+checkpoint path>` followed by an indented line with: the loading summary from
+`logs/run.log` (no missing / unexpected / mismatched keys beyond
+`mask_token`), the mean loss over steps 10–100 (expect near round 2's END,
+~0.032, not its start, 0.13), and whether the new run's processor
+`statistics.json` is byte-identical to the checkpoint's or re-derived. Write
+`out/finetune.pid` / `.pgid`. Append a **RESUME POINTER** naming the run
+folder, the pid and the device set so the P11 agent adopts the run instead of
+launching a second one (its prompt says a live fine-tune is never restarted;
+`ps -p` first). If the loss over steps 10–100 is near 0.13, the warm start did
+not take: stop that run (recorded pgid, then the python pid), write what you
+saw, and leave lane B for P11 proper — do not iterate on it inside P10.
+
+Lane A's P11 fine-tune stays where the prompt puts it: after `GATE P10: PASS`,
+by the P11 agent. Nothing else changes; the mirror keeps running.
+
 ## 09:00 UTC (2026-09-05, P10 attempt 1) — home is draining again (~140 GB/h); an insurance mirror is running, do not redo it
 
 `df` went 818 → 738 GB free between 08:22 and 08:56 — from outside, as
