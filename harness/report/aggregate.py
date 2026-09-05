@@ -79,6 +79,9 @@ CATEGORIES = [
 FOLDER_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(.+?)(?:-(\d+))?$")
 HEADER_RE = re.compile(r"^=== (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\S*) \$ ")
 NOT_RECORDED = "not recorded"
+# A config.json stamp this close to the launch is the launch stamp: bakeoff
+# writes it twice and its `finally` does not wait on a detached job.
+FINALIZER_SLOP = 180.0
 
 # gate P5's B-oracle criterion (harness/gates/p5.sh): >= 15 successes of 20
 # rollouts. Scaled to the oracle run's own episode count so the verdict text
@@ -216,6 +219,43 @@ def folder_stage(p: Path) -> str:
     return m.group(2) if m else p.name
 
 
+def artifact_end(d: Path) -> dt.datetime | None:
+    """Newest mtime among a run folder's own log and output entries, at most two
+    levels deep.
+
+    `bakeoff.py` stamps config.json in a `finally` that does not wait on a
+    detached trainer (the finalizer debt recorded in P9), so for round 2's
+    fine-tunes the stamp lands seconds after launch while the run still has
+    hours to go; and the two folders the storage switch created by hand have no
+    stamp at all. The artifacts themselves say when writing stopped, which is
+    a measurement rather than an estimate."""
+    best = 0.0
+    for pattern in ("logs/*", "out/*", "out/*/*"):
+        for p in d.glob(pattern):
+            try:
+                best = max(best, p.lstat().st_mtime)
+            except OSError:
+                pass
+    return dt.datetime.fromtimestamp(best, dt.timezone.utc) if best else None
+
+
+def folder_devices(d: Path, cfg: dict) -> tuple[list[int] | None, str]:
+    """The device list a run held, and where it was read from. Folders written
+    by hand (round 2's storage switch) carry no bakeoff stamp; their cmd.sh
+    acquires inside the script and echoes the claim into logs/run.log."""
+    if cfg and "cuda_visible_devices" in cfg:
+        return parse_devices(cfg.get("cuda_visible_devices")), "config.json"
+    for probe in (d / "cmd.sh", d / "logs" / "run.log"):
+        if not probe.is_file():
+            continue
+        with open(probe, errors="replace") as fh:
+            head = fh.read(20000)
+        m = re.search(r"CUDA_VISIBLE_DEVICES=([0-9]+(?:,[0-9]+)*)", head)
+        if m:
+            return parse_devices(m.group(1)), probe.name
+    return None, "not recorded"
+
+
 def folder_timing(d: Path) -> dict:
     cfg = read_json(d / "config.json") or {}
     launched = None
@@ -247,11 +287,19 @@ def folder_timing(d: Path) -> dict:
     starts = [t for t in [launched, *headers] if t]
     start = min(starts) if starts else None
     end = parse_ts(cfg.get("date")) if cfg else None
-    if end is None:
-        logs = list((d / "logs").glob("*")) if (d / "logs").is_dir() else []
-        if logs:
-            end = dt.datetime.fromtimestamp(max(p.stat().st_mtime for p in logs), dt.timezone.utc)
-    devices = parse_devices(cfg.get("cuda_visible_devices")) if cfg else None
+    # The finalizer debt: bakeoff stamps config.json once at launch and again in
+    # a `finally` that does not wait on a detached trainer, so a stamp landing
+    # within FINALIZER_SLOP of the launch is the launch stamp and not the end.
+    # The two folders the storage switch created by hand carry no stamp at all.
+    # Only in those two cases do the artifacts' mtimes decide -- otherwise the
+    # stamp is authoritative, because a later mtime can simply mean something
+    # else touched the folder afterwards (the lane-B token dataset's `meta/`
+    # was written into hours later by the fine-tune's dataloader).
+    if end is None or (start is not None and (end - start).total_seconds() < FINALIZER_SLOP):
+        art = artifact_end(d)
+        if art and (end is None or art > end):
+            end = art
+    devices, dev_source = folder_devices(d, cfg)
     span = (end - start).total_seconds() if (start and end and end >= start) else None
     gpu_hours = None
     if span is not None and devices is not None:
@@ -265,6 +313,7 @@ def folder_timing(d: Path) -> dict:
         "span_s": span,
         "attempts": max(1, len(headers)),
         "devices": devices,
+        "dev_source": dev_source,
         "gpu_hours": gpu_hours,
         "fallback": bool(cfg.get("run_root_fallback")) if cfg else str(d).startswith("/tmp/"),
     }
@@ -342,6 +391,124 @@ def lane_gpu_rows(lane: str) -> list[dict]:
     return [folder_timing(p) for p in run_folders(lane)]
 
 
+# --------------------------------------------------------------------------- round 2 discovery
+# Nothing below resolves "the run I want" by recency. P6's aggregate and P9's
+# screening watcher both picked the newest folder by mtime and both misread a
+# run once two runs of the same lane and stage overlapped, which is exactly
+# what P10 does (eight 200-rollout rows into run roots the screens were still
+# using). Every run here is identified by what `harness/bakeoff.py` stamped
+# into its own config.json: `--rollouts` says screen or row, `--checkpoint`
+# says which checkpoint, and the checkpoint's fine-tune folder says which round.
+ROUND2_TRAIN_STEPS = 20000
+SCREEN_ROLLOUTS = 20
+ROW_MIN_ROLLOUTS = 100
+
+
+def folder_end(p: Path) -> dt.datetime:
+    return folder_timing(p)["end"] or dt.datetime.fromtimestamp(p.stat().st_mtime, dt.timezone.utc)
+
+
+def finetune_dirs(lane: str, max_steps: int = ROUND2_TRAIN_STEPS) -> list[Path]:
+    """Fine-tune run folders of `lane` whose cmd.sh asks for `max_steps` steps.
+    Round 2 ran each lane across two folders — home, then instance-local /tmp
+    after the 2026-09-05 00:30 storage switch, resumed into the same optimizer
+    state — so this returns both, and both count as round 2."""
+    out = []
+    for p in run_folders(lane):
+        if folder_stage(p) != "finetune" or not (p / "cmd.sh").is_file():
+            continue
+        m = re.search(r"--max-steps\s+(\d+)", (p / "cmd.sh").read_text(errors="replace"))
+        if m and int(m.group(1)) == max_steps:
+            out.append(p)
+    return out
+
+
+def eval_runs(lane: str) -> list[dict]:
+    """Every eval run folder of `lane` that has a csv, with the bakeoff stamp
+    parsed: requested rollouts, the checkpoint it measured and that
+    checkpoint's fine-tune run folder."""
+    out = []
+    for p in run_folders(lane):
+        if folder_stage(p) != "eval" or not (p / "out" / "eval" / "eval_results.csv").is_file():
+            continue
+        args = (read_json(p / "config.json") or {}).get("args") or {}
+        ck = str(args.get("checkpoint") or "")
+        m = re.search(r"checkpoint-(\d+)", ck)
+        # <ft run>/out/checkpoints/checkpoint-N  ->  <ft run>
+        ft = Path(ck).parents[2] if ck else None
+        out.append(
+            {
+                "dir": p,
+                "requested": int(args.get("rollouts") or 0),
+                "checkpoint": ck,
+                "ft_dir": ft,
+                "step": int(m.group(1)) if m else None,
+            }
+        )
+    return out
+
+
+def round2_evals(lane: str) -> tuple[dict[int, dict], dict[int, dict]]:
+    """(screens, rows) of round 2 keyed by fine-tune step.
+
+    Screens are the 20-rollout runs — the last one per step wins, which is what
+    WP 9.3's stopping rule does with its series lines. Rows are the runs of at
+    least 100 rollouts; if a step somehow has two, the last one wins as well."""
+    ft = {str(p) for p in finetune_dirs(lane)}
+    screens: dict[int, dict] = {}
+    rows: dict[int, dict] = {}
+    for e in eval_runs(lane):
+        if e["step"] is None or e["ft_dir"] is None or str(e["ft_dir"]) not in ft:
+            continue
+        bucket = screens if e["requested"] == SCREEN_ROLLOUTS else (
+            rows if e["requested"] >= ROW_MIN_ROLLOUTS else None
+        )
+        if bucket is None:
+            continue
+        prev = bucket.get(e["step"])
+        if prev is None or folder_end(e["dir"]) >= folder_end(prev["dir"]):
+            bucket[e["step"]] = e
+    return screens, rows
+
+
+def rank_key(r: dict) -> tuple:
+    """P10's pre-registered ranking rule: (successes, milestone-6 rate,
+    milestone-5 rate, step). Never mean progress — round 2's lane-A
+    checkpoint-5000 had the highest mean progress of its lane with zero
+    successes (the place-at-centre-and-stall mode)."""
+    return (r["n_success"], r["milestone_rates"][5], r["milestone_rates"][4], r["step"])
+
+
+def restrict(r: dict, first: int) -> dict:
+    """The same row recomputed over episodes with index >= `first`.
+
+    The 20-rollout screens that chose each lane's checkpoint used seeds 0-19 of
+    the same sequence the 200-rollout rows use, so episodes 0-19 of a row are
+    the selection set and 20-199 are genuinely held out from it."""
+    eps = [e for e in r["episodes"] if e["episode"] >= first]
+    n = len(eps)
+    succ = [e for e in eps if e["success"]]
+    out = dict(r)
+    out.update(
+        {
+            "episodes": eps,
+            "n": n,
+            "n_success": len(succ),
+            "success_rate": (len(succ) / n) if n else 0.0,
+            "ci95": clopper_pearson(len(succ), n),
+            "milestone_rates": [
+                (sum(1 for e in eps if e["reached"] >= k) / n if n else 0.0)
+                for k in range(1, len(MILESTONES) + 1)
+            ],
+            "progress_mean": (sum(e["progress"] for e in eps) / n) if n else 0.0,
+            "steps_to_success": [e["length"] for e in succ],
+            "median_steps": statistics.median([e["length"] for e in succ]) if succ else None,
+            "first_episode": first,
+        }
+    )
+    return out
+
+
 # --------------------------------------------------------------------------- parity
 def finetune_command(lane: str) -> tuple[Path | None, dict | None, str | None]:
     """Newest <lane>/<date>_finetune folder -> (folder, parsed torchrun args, raw line)."""
@@ -350,13 +517,19 @@ def finetune_command(lane: str) -> tuple[Path | None, dict | None, str | None]:
         return None, None, None
     cands.sort(key=lambda p: (folder_timing(p)["end"] or dt.datetime.min.replace(tzinfo=dt.timezone.utc), p.name))
     d = cands[-1]
+    # Join backslash continuations first: round 2's cmd.sh wraps the torchrun
+    # invocation over ten lines, so matching raw lines would hand shlex a
+    # dangling backslash (and only a fragment of the command).
+    text = re.sub(r"\\\n\s*", " ", (d / "cmd.sh").read_text(errors="replace"))
     line = None
     cuda = None
-    for raw in (d / "cmd.sh").read_text().splitlines():
+    for raw in text.splitlines():
         if "launch_finetune" in raw:
             line = raw.strip()
         if raw.startswith("export CUDA_VISIBLE_DEVICES="):
             cuda = raw.split("=", 1)[1]
+    if cuda is None:  # round 2 acquires inside cmd.sh; the stamp has the devices
+        cuda = (read_json(d / "config.json") or {}).get("cuda_visible_devices") or None
     if line is None:
         return d, None, None
     toks = shlex.split(line)
@@ -386,22 +559,58 @@ def finetune_command(lane: str) -> tuple[Path | None, dict | None, str | None]:
     return d, args, line
 
 
-def finetune_loss(d: Path | None, step: int = 2000) -> str:
+def last_checkpoint(d: Path | None) -> Path | None:
+    """The highest-numbered checkpoint directory of a fine-tune run folder."""
+    if d is None:
+        return None
+    ck = d / "out" / "checkpoints"
+    if not ck.is_dir():
+        return None
+    cands = []
+    for p in ck.iterdir():
+        m = re.fullmatch(r"checkpoint-(\d+)", p.name)
+        if m and p.is_dir():
+            cands.append((int(m.group(1)), p))
+    return max(cands)[1] if cands else None
+
+
+def finetune_loss(d: Path | None, step: int | None = None) -> str:
     """Last logged training loss of a fine-tune run.
 
     HuggingFace's Trainer writes its whole `log_history` into every checkpoint's
     `trainer_state.json`; the last entry carrying a `loss` key is the loss at
-    the final logged step. Anything missing (no folder, no checkpoint, no loss
-    entry -- e.g. a fine-tune still running) reads as "not recorded"."""
-    if d is None:
-        return NOT_RECORDED
-    state = read_json(d / "out" / "checkpoints" / f"checkpoint-{step}" / "trainer_state.json")
+    the final logged step. With no `step` the highest-numbered checkpoint is
+    read, so this follows a run whatever its budget. Anything missing (no
+    folder, no checkpoint, no loss entry -- e.g. a fine-tune still running)
+    reads as "not recorded"."""
+    ckpt = (d / "out" / "checkpoints" / f"checkpoint-{step}") if (d and step) else last_checkpoint(d)
+    state = read_json(ckpt / "trainer_state.json") if ckpt else None
     if not state:
         return NOT_RECORDED
     losses = [e["loss"] for e in state.get("log_history", []) if isinstance(e, dict) and "loss" in e]
     if not losses:
         return NOT_RECORDED
     return f"{float(losses[-1]):g}"
+
+
+def loss_series(d: Path | None, every: int = 2500) -> str:
+    """Training loss sampled every `every` steps from the last checkpoint's
+    log_history — the curve behind 'both lanes were still improving'."""
+    ckpt = last_checkpoint(d)
+    state = read_json(ckpt / "trainer_state.json") if ckpt else None
+    if not state:
+        return NOT_RECORDED
+    hist = [e for e in state.get("log_history", []) if isinstance(e, dict) and "loss" in e]
+    if not hist:
+        return NOT_RECORDED
+    picked = []
+    for target in range(every, 10**9, every):
+        near = [e for e in hist if abs(int(e.get("step", 0)) - target) <= every // 10]
+        if not near:
+            break
+        e = min(near, key=lambda e: abs(int(e.get("step", 0)) - target))
+        picked.append(f"{target}: {float(e['loss']):.4f}")
+    return ", ".join(picked) if picked else NOT_RECORDED
 
 
 def modality_summary(path: Path) -> dict:
@@ -541,17 +750,19 @@ def gpu_table(lane: str, rows: list[dict]) -> tuple[str, dict]:
     unrecorded = []
     for t in rows:
         d = t["dir"]
-        if not t["has_cfg"]:
-            out.append([f"`{short_path(d)}`", "—", NOT_RECORDED, "—", "—", "—", "—", "not counted (no config.json)"])
+        dev = t["devices"]
+        if dev is None and t["span_s"] is None:
+            out.append([f"`{short_path(d)}`", "—", NOT_RECORDED, "—", "—", "—", "—", "not counted (no stamp)"])
             unrecorded.append(d)
             continue
-        dev = t["devices"]
         if dev is None:
-            dev_cell = f"{NOT_RECORDED} ({t['cfg'].get('cuda_visible_devices')!r})"
+            dev_cell = f"{NOT_RECORDED} ({(t['cfg'] or {}).get('cuda_visible_devices')!r})"
         elif not dev:
             dev_cell = "none (CPU)"
         else:
             dev_cell = ",".join(str(x) for x in dev)
+            if t["dev_source"] != "config.json":
+                dev_cell += f" (from `{t['dev_source']}`)"
         if t["gpu_hours"] is None:
             cell = NOT_RECORDED
             if dev is not None and not dev and t["span_s"] is not None:
@@ -609,57 +820,201 @@ def eval_parity_table(results: dict) -> tuple[str, list[str]]:
     return md_table(header, rows), policy_diffs
 
 
+def mvec(r: dict) -> str:
+    """The six-milestone reach vector in per cent, leading — P10's rule, because
+    for a staged task a falling mean progress can accompany a policy that gets
+    strictly further (lane A at 7500: progress 0.467 -> 0.392 while milestone 4
+    went 0 % -> 40 %)."""
+    return " / ".join(f"{100 * x:.0f}" for x in r["milestone_rates"])
+
+
+def row_table(entries: list[tuple[str, dict]]) -> str:
+    header = [
+        "row",
+        "milestones 1…6 (% reached)",
+        "successes",
+        "success rate",
+        "exact 95 % CI",
+        "mean progress",
+        "median steps-to-success",
+    ]
+    rows = []
+    for label, r in entries:
+        rows.append(
+            [
+                label,
+                mvec(r),
+                f"**{r['n_success']}/{r['n']}**",
+                f"{100 * r['success_rate']:.1f} %",
+                ci_text(r),
+                f"{r['progress_mean']:.3f}",
+                (
+                    f"{r['median_steps']:.0f} ({r['median_steps'] / 50:.1f} s)"
+                    if r["median_steps"] is not None
+                    else "n/a (no success)"
+                ),
+            ]
+        )
+    return md_table(header, rows)
+
+
+def ceiling_table(entries: list[tuple[str, dict, dict | None]]) -> str:
+    """Two numbers per policy row: absolute success, and success divided by its
+    own lane's oracle ceiling. A lane's oracle bounds its interface, not its
+    policy, so the ratio says how much of the reachable headroom the VLA took."""
+    header = ["row", "absolute", "own oracle ceiling", "÷ ceiling"]
+    rows = []
+    for label, r, ceil in entries:
+        if ceil is None:
+            rows.append([label, f"{100 * r['success_rate']:.1f} %", "—", "—"])
+            continue
+        ratio = (r["success_rate"] / ceil["success_rate"]) if ceil["success_rate"] else None
+        rows.append(
+            [
+                label,
+                f"{r['n_success']}/{r['n']} = {100 * r['success_rate']:.1f} %",
+                f"{ceil['n_success']}/{ceil['n']} = {100 * ceil['success_rate']:.1f} %",
+                "n/a" if ratio is None else f"**{100 * ratio:.0f} %**",
+            ]
+        )
+    return md_table(header, rows)
+
+
+def screen_table(screens: dict[str, dict[int, dict]]) -> str:
+    """The P9 screening series — the two learning curves that chose the
+    checkpoints. 20 rollouts each, one evaluation per checkpoint, the same
+    binding as every row below."""
+    steps = sorted(set(screens["lane_a"]) | set(screens["lane_b"]))
+    header = ["fine-tune step"] + [f"**{s}**" for s in steps]
+    rows = []
+    for lane, short in (("lane_a", "lane A"), ("lane_b", "lane B")):
+        succ, prog, m4 = [f"{short} successes / 20"], [f"{short} mean progress"], [f"{short} milestone 4 (%)"]
+        for s in steps:
+            r = screens[lane].get(s)
+            if r is None:
+                succ.append("—"); prog.append("—"); m4.append("—")
+                continue
+            succ.append(f"**{r['n_success']}**")
+            prog.append(f"{r['progress_mean']:.3f}")
+            m4.append(f"{100 * r['milestone_rates'][3]:.0f}")
+        rows += [succ, m4, prog]
+    return md_table(header, rows)
+
+
+def stage_hours(lane: str) -> tuple[str, float]:
+    """GPU-hours of a lane grouped by stage, so 'lane B's SONIC RL is counted
+    in' is a number a reader can check rather than a claim."""
+    per: dict[str, list[float]] = collections.defaultdict(list)
+    for p in run_folders(lane):
+        t = folder_timing(p)
+        if t["gpu_hours"] is None:
+            continue
+        per[folder_stage(p)].append(t["gpu_hours"])
+    total = sum(sum(v) for v in per.values())
+    rows = []
+    for stage in sorted(per, key=lambda s: -sum(per[s])):
+        h = sum(per[stage])
+        rows.append(
+            [f"`{stage}`", str(len(per[stage])), f"{h:.2f}", f"{100 * h / total:.0f} %" if total else "—"]
+        )
+    rows.append(["**total**", f"**{sum(len(v) for v in per.values())}**", f"**{total:.2f}**", "100 %"])
+    return md_table(["stage", "run folders", "GPU-hours", "share"], rows), total
+
+
 # --------------------------------------------------------------------------- computed prose
 # Everything below turns counts into sentences. No sentence here may assume an
 # outcome: each branch is chosen by the numbers in the run folders, so the
 # report stays true whatever the newest eval and oracle runs say.
 def headline_verdict(ra: dict, rb: dict, oa: dict, ob: dict) -> str:
+    """The verdict sentence. Every branch is chosen by the counts, so the
+    paragraph stays true whatever the rows say — including the branch where the
+    two lanes cannot be told apart, which is a result and not a failure."""
     need = gate_needed(ob["n"])
     if ob["n_success"] >= need:
         head = (
             "**The B-oracle ceiling is open.** Replaying the encoder-labelled SONIC tokens "
             f"through the decoder with no VLA in the loop succeeds {count_text(ob)} "
-            f"({100 * ob['success_rate']:.0f} %, mean progress {ob['progress_mean']:.3f}), at "
+            f"({100 * ob['success_rate']:.1f} %, mean progress {ob['progress_mean']:.3f}), at "
             f"or above {gate_phrase(ob)}. Lane "
             f"B's {count_text(rb)} therefore measures the VLA over the token space rather "
             "than a controller that cannot execute its own labels, and can be read next to "
-            f"lane A's {count_text(ra)}."
+            f"lane A's {count_text(ra)} — though it is bounded by that ceiling and lane A's "
+            f"is bounded by the A-oracle's {count_text(oa)}, which are not the same height."
         )
     else:
         head = (
             "**The B-oracle ceiling is closed.** Replaying the encoder-labelled SONIC tokens "
             f"through the decoder with no VLA in the loop succeeds {count_text(ob)} "
-            f"({100 * ob['success_rate']:.0f} %, mean progress {ob['progress_mean']:.3f}), "
+            f"({100 * ob['success_rate']:.1f} %, mean progress {ob['progress_mean']:.3f}), "
             f"below {gate_phrase(ob)} and below "
             f"the A-oracle's {count_text(oa)}. Lane B's {count_text(rb)} therefore cannot be "
             "read as a VLA number: the controller under it misses the task on the recorded "
             "spawns with no VLA in the loop at all."
         )
     delta = abs(ra["n_success"] - rb["n_success"])
+    pts = abs(100 * ra["success_rate"] - 100 * rb["success_rate"])
     if delta == 0:
-        cmp_head = f"The two policy rows are level at {count_text(ra)}"
+        cmp_head = f"The two headline rows are level at {count_text(ra)}"
+        winner = "Neither lane won"
     else:
-        higher = "lane A" if ra["n_success"] > rb["n_success"] else "lane B"
+        higher = "Lane A" if ra["n_success"] > rb["n_success"] else "Lane B"
         cmp_head = (
-            f"The two policy rows are lane A {count_text(ra)} and lane B {count_text(rb)} "
-            f"({higher} higher by {delta} episode{'s' if delta != 1 else ''})"
+            f"The two headline rows are lane A {count_text(ra)} ({100 * ra['success_rate']:.1f} %) "
+            f"and lane B {count_text(rb)} ({100 * rb['success_rate']:.1f} %)"
         )
+        winner = f"{higher} scored higher, by {delta} episodes = {pts:.1f} points"
     if overlap(ra["ci95"], rb["ci95"]):
-        verdict = (
-            "do overlap, so the difference between the two rows is inside what "
-            f"{ra['n']} rollouts produce by sampling alone."
+        sep = (
+            f"**do overlap**, so n = {ra['n']} does not separate the two lanes: the gap is "
+            "inside what this many rollouts produce by sampling alone. That is the result — "
+            "not a failure of the experiment, and not evidence that the lanes are equal "
+            "either; it is the resolution this n buys."
         )
     else:
-        verdict = (
-            f"do not overlap, so the difference is larger than sampling at n = {ra['n']} "
-            "explains — for these two runs (one checkpoint of one 2000-step fine-tune, one "
-            "task instance, one seed set), not for the two control stacks."
+        sep = (
+            f"**do not overlap**, so n = {ra['n']} does separate these two rows: the gap is "
+            "larger than sampling at this n explains. It separates *these two runs* — one "
+            "training seed per lane, one checkpoint chosen per lane by a 20-rollout screen, "
+            "one task, one architecture pair — not the two control stacks in general."
         )
     return (
-        f"{head} {cmp_head}; exact 95 % Clopper–Pearson intervals lane A {ci_text(ra)} and "
-        f"lane B {ci_text(rb)}. At n = {ra['n']} two rows are only distinguishable when their "
-        f"intervals do not overlap; these {verdict} Nothing here says which control stack is "
-        "better: this is a pipeline proof, not a result."
+        f"{head} {cmp_head}; {winner}. Exact 95 % Clopper–Pearson intervals are lane A "
+        f"{ci_text(ra)} and lane B {ci_text(rb)}, and they {sep}"
+    )
+
+
+def spread_sentence(label: str, entries: list[tuple[str, dict]]) -> str:
+    """How much of 'which checkpoint won' is luck: the range across a lane's
+    three 200-rollout rows, each of which a 20-rollout screen ranked."""
+    if len(entries) < 2:
+        return f"{label}: only one checkpoint was measured at this n, so there is no spread to report."
+    best = max(entries, key=lambda kv: kv[1]["n_success"])
+    worst = min(entries, key=lambda kv: kv[1]["n_success"])
+    span = best[1]["n_success"] - worst[1]["n_success"]
+    parts = ", ".join(f"{k} {count_text(v)}" for k, v in entries)
+    return (
+        f"{label}: {parts} — a spread of {span} episodes "
+        f"({100 * (best[1]['success_rate'] - worst[1]['success_rate']):.1f} points) across "
+        f"{len(entries)} checkpoints of one training run, all measured at n = {best[1]['n']}."
+    )
+
+
+def selection_sentence(lane_label: str, screens: dict[int, dict], picked: int, row: dict | None) -> str:
+    """What the 20-rollout screen said about the chosen checkpoint versus what
+    200 rollouts said about it. The screens select; they do not measure."""
+    s = screens.get(picked)
+    if s is None:
+        return f"{lane_label}: no screen recorded for checkpoint-{picked}."
+    txt = (
+        f"{lane_label} chose **checkpoint-{picked}** on the screen's {count_text(s)} "
+        f"(milestones {mvec(s)})"
+    )
+    if row is None:
+        return txt + " — no 200-rollout row for it."
+    drift = 100 * (row["success_rate"] - s["success_rate"])
+    return (
+        txt + f"; at 200 rollouts that same checkpoint scores {count_text(row)} "
+        f"({100 * row['success_rate']:.1f} %), {drift:+.1f} points against its own screen."
     )
 
 
@@ -751,7 +1106,7 @@ def b_verdict(ra: dict, rb: dict, ob: dict) -> str:
             f"**Lane B's {count_text(rb)} is therefore readable as a VLA number.** With the "
             f"ceiling at {count_text(ob)}, lane B's row measures GR00T over the token space "
             "driving a decoder that can execute those tokens — the comparison the bake-off "
-            f"asked for. It remains one checkpoint of one 2000-step fine-tune over {rb['n']} "
+            f"asked for. It remains one checkpoint of one training run over {rb['n']} "
             "rollouts, with the interval quoted in section 1, and it is bounded above by the "
             "ceiling, not by the A-oracle."
         )
@@ -785,12 +1140,17 @@ def instance_local_note(results: dict) -> str:
 
 
 # --------------------------------------------------------------------------- main
-def build(verbose: bool = True) -> str:
+def build(verbose: bool = True, rows: dict[str, Path] | None = None, held_out_from: int = 20) -> str:
+    rows = rows or {}
     results: dict[str, dict] = {}
     candidates: dict[str, list[Path]] = {}
     missing = []
     for key, label, lane, stage, _kind in CATEGORIES:
-        d, cands = newest_eval_folder(lane, stage)
+        if key in rows:
+            d, cands, how = rows[key], [rows[key]], "explicit --row"
+        else:
+            d, cands = newest_eval_folder(lane, stage)
+            how = "newest by finalisation stamp"
         candidates[key] = cands
         if d is None:
             missing.append(label)
@@ -800,7 +1160,7 @@ def build(verbose: bool = True) -> str:
             r = results[key]
             print(
                 f"[aggregate] {key:14s} <- {d}  ({r['n']} episodes, {r['n_success']} successes; "
-                f"{len(cands)} candidate folder(s))",
+                f"{how}, {len(cands)} candidate folder(s))",
                 file=sys.stderr,
             )
     if missing:
@@ -842,6 +1202,80 @@ def build(verbose: bool = True) -> str:
     def succ(r):
         return f"{r['n_success']}/{r['n']}"
 
+    # ---- round 2: the screening series, the eight rows, the two ceilings ----
+    screens: dict[str, dict[int, dict]] = {}
+    lane_rows: dict[str, dict[int, dict]] = {}
+    for lane in ("lane_a", "lane_b"):
+        sc, rw = round2_evals(lane)
+        screens[lane] = {s: dict(load_eval(e["dir"]), step=s) for s, e in sorted(sc.items())}
+        lane_rows[lane] = {s: dict(load_eval(e["dir"]), step=s) for s, e in sorted(rw.items())}
+        if verbose:
+            print(
+                f"[aggregate] {lane}: {len(screens[lane])} round-2 screens "
+                f"{sorted(screens[lane])}, {len(lane_rows[lane])} 200-rollout rows "
+                f"{sorted(lane_rows[lane])}",
+                file=sys.stderr,
+            )
+    picked = {
+        lane: (max(screens[lane].values(), key=rank_key)["step"] if screens[lane] else None)
+        for lane in screens
+    }
+
+    def row_step(r: dict) -> int | None:
+        m = re.search(r"checkpoint-(\d+)", str(((r["cfg"] or {}).get("args") or {}).get("checkpoint") or ""))
+        return int(m.group(1)) if m else None
+
+    lane_entries: dict[str, list[tuple[str, dict]]] = {}
+    for lane, short in (("lane_a", "lane A"), ("lane_b", "lane B")):
+        ordered = sorted(lane_rows[lane].values(), key=lambda r: (r["step"] != picked[lane], -r["step"]))
+        lane_entries[lane] = [
+            (
+                f"{short} `checkpoint-{r['step']}`" + (" — **headline**" if r["step"] == picked[lane] else ""),
+                r,
+            )
+            for r in ordered
+        ]
+    row_entries = (
+        lane_entries["lane_a"]
+        + [("**A-oracle** — recorded joint targets, no VLA", oa)]
+        + lane_entries["lane_b"]
+        + [("**B-oracle** — encoder tokens → decoder, no VLA", ob)]
+    )
+    held = [(label, restrict(r, held_out_from)) for label, r in row_entries]
+    ra_h, rb_h = restrict(ra, held_out_from), restrict(rb, held_out_from)
+
+    def overlap_sentence(x: dict, y: dict, tag: str) -> str:
+        ov = overlap(x["ci95"], y["ci95"])
+        return (
+            f"{tag} — lane A {count_text(x)} ({ci_text(x)}) against lane B {count_text(y)} "
+            f"({ci_text(y)}): the two intervals "
+            + (
+                "**overlap**, so this comparison does not separate the lanes."
+                if ov
+                else "**do not overlap**, so this comparison separates these two rows."
+            )
+        )
+
+    def headline_check(r: dict, lane: str, short: str) -> str:
+        step, want = row_step(r), picked[lane]
+        if step is None or want is None:
+            return f"{short}: the pre-registered pick could not be recovered from the stamps."
+        if step == want:
+            return (
+                f"{short}: the row reported above is `checkpoint-{step}`, which is the "
+                "checkpoint the screens had already chosen before any 200-rollout row was "
+                "seen — the pre-registration holds."
+            )
+        return (
+            f"**{short}: the row reported above is `checkpoint-{step}`, but the screening rule "
+            f"picked `checkpoint-{want}`. The headline is not the pre-registered row — say so "
+            "when quoting it.**"
+        )
+
+    stage_a, hours_a = stage_hours("lane_a")
+    stage_b, hours_b = stage_hours("lane_b")
+    stage_sh, hours_sh = stage_hours("shared")
+
     subs = {
         "GENERATED": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "SOURCES_TABLE": sources_table(results, candidates),
@@ -851,9 +1285,10 @@ def build(verbose: bool = True) -> str:
         "PARITY_DIFFS": ", ".join(f"`{d}`" for d in diffs) if diffs else "none",
         "PARITY_VERDICT": (
             "The two commands are identical except for the arguments listed as differing above; "
-            "every one of those is the data path, the modality config or the output folder, so the "
-            "training budget is the same."
-            if set(diffs) <= {"--dataset-path", "--modality-config-path", "--output-dir"}
+            "every one of those is the data path, the modality config, the output folder or "
+            "torchrun's rendezvous port (the two fine-tunes ran concurrently and cannot share "
+            "one), so the training budget and every training hyper-parameter is the same."
+            if set(diffs) <= {"--dataset-path", "--modality-config-path", "--output-dir", "--master_port"}
             else "**The two fine-tunes differ in more than the data/config/output paths — the "
             "comparison is not at parity. See the differing rows above.**"
         ),
@@ -913,6 +1348,58 @@ def build(verbose: bool = True) -> str:
             ", ".join(f"`{short_path(r['dir'])}`" for r in results.values() if r["timing"]["fallback"]) or "none"
         ),
         "INSTANCE_LOCAL_NOTE": instance_local_note(results),
+        # ---- round 2 ----
+        "ROWS_TABLE": row_table(row_entries),
+        "ROWS_TABLE_HELDOUT": row_table(held),
+        "HELDOUT_FROM": str(held_out_from),
+        "HELDOUT_N": str(ra_h["n"]),
+        "CEILING_TABLE": ceiling_table(
+            [(lbl, r, oa) for lbl, r in lane_entries["lane_a"]]
+            + [(lbl, r, ob) for lbl, r in lane_entries["lane_b"]]
+        ),
+        "SCREEN_TABLE": screen_table(screens),
+        "SELECTION_A": selection_sentence(
+            "**Lane A**", screens["lane_a"], picked["lane_a"], lane_rows["lane_a"].get(picked["lane_a"])
+        ),
+        "SELECTION_B": selection_sentence(
+            "**Lane B**", screens["lane_b"], picked["lane_b"], lane_rows["lane_b"].get(picked["lane_b"])
+        ),
+        "SPREAD_A": spread_sentence("**Lane A**", lane_entries["lane_a"]),
+        "SPREAD_B": spread_sentence("**Lane B**", lane_entries["lane_b"]),
+        "OVERLAP_ALL": overlap_sentence(ra, rb, f"All {ra['n']} episodes"),
+        "OVERLAP_HELDOUT": overlap_sentence(
+            ra_h, rb_h, f"Held-out episodes {held_out_from}–{held_out_from + ra_h['n'] - 1}"
+        ),
+        "HEADLINE_CHECK_A": headline_check(ra, "lane_a", "Lane A"),
+        "HEADLINE_CHECK_B": headline_check(rb, "lane_b", "Lane B"),
+        "STAGE_HOURS_A": stage_a,
+        "STAGE_HOURS_B": stage_b,
+        "STAGE_HOURS_SHARED": stage_sh,
+        "STAGE_TOTAL_A": f"{hours_a:.2f}",
+        "STAGE_TOTAL_B": f"{hours_b:.2f}",
+        "STAGE_TOTAL_SHARED": f"{hours_sh:.2f}",
+        "LOSS_SERIES_A": loss_series(ft_a_dir),
+        "LOSS_SERIES_B": loss_series(ft_b_dir),
+        "A_CKPT": f"checkpoint-{row_step(ra)}" if row_step(ra) else NOT_RECORDED,
+        "B_CKPT": f"checkpoint-{row_step(rb)}" if row_step(rb) else NOT_RECORDED,
+        "A_RATIO": (
+            f"{100 * ra['success_rate'] / oa['success_rate']:.0f} %" if oa["success_rate"] else "n/a"
+        ),
+        "B_RATIO": (
+            f"{100 * rb['success_rate'] / ob['success_rate']:.0f} %" if ob["success_rate"] else "n/a"
+        ),
+        "A_RATE": f"{100 * ra['success_rate']:.1f} %",
+        "B_RATE": f"{100 * rb['success_rate']:.1f} %",
+        "OA_RATE": f"{100 * oa['success_rate']:.1f} %",
+        "OB_RATE": f"{100 * ob['success_rate']:.1f} %",
+        "A_MVEC": mvec(ra),
+        "B_MVEC": mvec(rb),
+        "OA_MVEC": mvec(oa),
+        "OB_MVEC": mvec(ob),
+        "A_CI": ci_text(ra),
+        "B_CI": ci_text(rb),
+        "OA_CI": ci_text(oa),
+        "OB_CI": ci_text(ob),
     }
 
     text = TEMPLATE.read_text()
@@ -930,12 +1417,73 @@ def build(verbose: bool = True) -> str:
     return text
 
 
+ROW_KEYS = [c[0] for c in CATEGORIES]
+ROW_ALIASES = {
+    "lane_a_eval": "lane_a_policy",
+    "lane_b_eval": "lane_b_policy",
+    "oracle_a": "lane_a_oracle",
+    "oracle_b": "lane_b_oracle",
+}
+
+
+def parse_rows(pairs: list[str], flags: dict[str, Path | None]) -> dict[str, Path]:
+    """`--row <label>=<run folder>` (repeatable) plus the four named flags.
+
+    Explicit paths exist because "newest wins" is wrong the moment two runs of
+    the same lane and stage overlap, which P10 does by design: eight rows and
+    the screens that chose them share the two run roots. A label may be a
+    category key (`lane_a_policy`) or its friendlier alias (`lane_a_eval`)."""
+    out: dict[str, Path] = {}
+    for name, path in flags.items():
+        if path is not None:
+            out[ROW_ALIASES.get(name, name)] = Path(path).expanduser().resolve()
+    for pair in pairs:
+        if "=" not in pair:
+            raise SystemExit(f"[aggregate] --row needs <label>=<run folder>, got {pair!r}")
+        label, path = pair.split("=", 1)
+        key = ROW_ALIASES.get(label.strip(), label.strip())
+        if key not in ROW_KEYS:
+            raise SystemExit(
+                f"[aggregate] --row label {label!r} is not one of "
+                f"{', '.join(ROW_KEYS)} (aliases: {', '.join(ROW_ALIASES)})"
+            )
+        out[key] = Path(path.strip()).expanduser().resolve()
+    for key, p in out.items():
+        if not (p / "out" / "eval" / "eval_results.csv").is_file():
+            raise SystemExit(f"[aggregate] {key}: {p} has no out/eval/eval_results.csv")
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stdout", action="store_true", help="print the report instead of writing plan/REPORT.md")
     ap.add_argument("--out", type=Path, default=REPORT, help=f"output path (default {REPORT})")
+    ap.add_argument(
+        "--row", action="append", default=[], metavar="LABEL=RUN",
+        help="pin a row to a run folder instead of taking the newest; repeatable. "
+             f"LABEL is one of {', '.join(ROW_KEYS)} or {', '.join(ROW_ALIASES)}",
+    )
+    ap.add_argument("--lane-a-eval", type=Path, help="run folder for lane A's policy row")
+    ap.add_argument("--lane-b-eval", type=Path, help="run folder for lane B's policy row")
+    ap.add_argument("--oracle-a", type=Path, help="run folder for the A-oracle row")
+    ap.add_argument("--oracle-b", type=Path, help="run folder for the B-oracle row")
+    ap.add_argument(
+        "--held-out-from", type=int, default=20, metavar="K",
+        help="first episode index of the held-out slice reported alongside every row "
+             "(default 20: the 20-rollout screens that selected the checkpoints used "
+             "episodes 0-19 of the same seed sequence)",
+    )
     args = ap.parse_args(argv)
-    text = build()
+    rows = parse_rows(
+        args.row,
+        {
+            "lane_a_eval": args.lane_a_eval,
+            "lane_b_eval": args.lane_b_eval,
+            "oracle_a": args.oracle_a,
+            "oracle_b": args.oracle_b,
+        },
+    )
+    text = build(rows=rows, held_out_from=args.held_out_from)
     if args.stdout:
         sys.stdout.write(text)
         return 0
