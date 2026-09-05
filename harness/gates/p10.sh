@@ -39,10 +39,26 @@ newest_eval() {  # $1 = roots, $2 = path glob, $3 = "oracle" | "policy"
   else find_runs "$1" -maxdepth 5 -type f -path "$2" -newermt "$EPOCH" | grep -v oracle | newest; fi
 }
 
-acsv=$(newest_eval "$LANE_A_ALL" '*_eval*/out/eval/eval_results.csv' policy)
-bcsv=$(newest_eval "$LANE_B_ALL" '*_eval*/out/eval/eval_results.csv' policy)
-oa=$(newest_eval "$LANE_A_ALL" '*oracle_a*/out/eval/eval_results.csv' oracle)
-ob=$(newest_eval "$LANE_B_ALL" '*oracle_b*/out/eval/eval_results.csv' oracle)
+# Explicit run folders win over "newest". P9 recorded the harness debt that
+# makes this necessary: any tool that resolves "the run I just made" by recency
+# is wrong as soon as two runs of the same lane and stage overlap, which is what
+# P10 does by design (eight 200-rollout rows into the run roots the 20-rollout
+# screens were still using). Set P10_LANE_A_EVAL / P10_LANE_B_EVAL /
+# P10_ORACLE_A / P10_ORACLE_B to a run folder to pin a row; unset falls back to
+# the newest folder as before. A pinned folder must still pass every check.
+pin_or_newest() {  # $1 = pinned run folder ("" for none), $2..$4 = newest_eval args
+  if [ -n "$1" ]; then
+    local c="$1/out/eval/eval_results.csv"
+    [ -f "$c" ] && printf '%s\n' "$c"
+    return
+  fi
+  newest_eval "$2" "$3" "$4"
+}
+
+acsv=$(pin_or_newest "${P10_LANE_A_EVAL:-}" "$LANE_A_ALL" '*_eval*/out/eval/eval_results.csv' policy)
+bcsv=$(pin_or_newest "${P10_LANE_B_EVAL:-}" "$LANE_B_ALL" '*_eval*/out/eval/eval_results.csv' policy)
+oa=$(pin_or_newest "${P10_ORACLE_A:-}" "$LANE_A_ALL" '*oracle_a*/out/eval/eval_results.csv' oracle)
+ob=$(pin_or_newest "${P10_ORACLE_B:-}" "$LANE_B_ALL" '*oracle_b*/out/eval/eval_results.csv' oracle)
 
 check_rows() {  # $1 = label, $2 = csv, $3 = minimum
   if [ -z "$2" ]; then fail "$1 >= $3 rollouts" "no eval_results.csv newer than the epoch"; return; fi
@@ -62,6 +78,20 @@ if [ -n "$acsv" ] && [ -n "$bcsv" ]; then
   if [ "$ra" -eq "$rb" ]; then pass "P10 both policies, same n" "$ra rollouts each"
   else warn "P10 both policies, same n" "lane A $ra vs lane B $rb rollouts"; fi
 fi
+
+# the two policy rows must be the checkpoints the P9 screens pre-registered
+checkpoint_of() { python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("args") or {}).get("checkpoint") or "")' "$1" 2>/dev/null; }
+for spec in "lane A:$acsv:${P10_CKPT_A:-checkpoint-20000}" "lane B:$bcsv:${P10_CKPT_B:-checkpoint-17500}"; do
+  lbl=${spec%%:*}; rest=${spec#*:}; csvp=${rest%%:*}; want=${rest#*:}
+  if [ -z "$csvp" ]; then continue; fi
+  runf=$(dirname "$(dirname "$(dirname "$csvp")")")
+  got=$(checkpoint_of "$runf/config.json")
+  case "$got" in
+    */"$want") pass "P10 $lbl row is the pre-registered ckpt" "$want" ;;
+    "")        warn "P10 $lbl row is the pre-registered ckpt" "no checkpoint stamped in $runf/config.json" ;;
+    *)         warn "P10 $lbl row is the pre-registered ckpt" "row measures ${got##*/}, screens chose $want" ;;
+  esac
+done
 
 # report regenerated after the last eval
 rep="$REPO_ROOT/plan/REPORT.md"
