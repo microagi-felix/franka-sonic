@@ -2,6 +2,71 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 21:05 UTC (2026-09-05) — the driver died on the account's usage limit (not on the work); it is restarted; the eight rows are launched by the orchestrator, UNFIXED + SEEDED; the fresh-first-obs patch is NOT to be used
+
+**What happened.** P11 attempt 1 ended cleanly at 19:37. Attempts 2 and 3
+died in seconds on `You've hit your session limit · resets 9pm (UTC)`, so the
+driver wrote `BLOCKED` at 19:52 and exited; the waiter exited with it. The
+limit reset at 21:00; `DRIVER: resume` is appended and a fresh driver started
+(tmux window `driver8`, `DRIVER_RUNS=/tmp/franka-sonic/driver`). Nothing else
+broke: lane B's fine-tune finished (20:18, 8 checkpoints), the watcher
+screened B@17500 (**19/20**) and B@20000 (**15/20**), and all eight devices are
+idle.
+
+**The under-load validation attempt 1 launched at 19:48 is decisive against
+the patch as written.** Three `--fresh-first-obs` runs of lane B
+`checkpoint-10000`, seeded: **4/20, 5/20, 5/20** with an identical
+episode-by-episode pattern (`00011000100001010000`); three seeded runs without
+the flag: **19/20, 19/20, 9/20** (the third with a dead stretch, episodes
+4–8). So the mechanism is real (Isaac Lab's `num_rerenders_on_reset = 0` —
+the patch's own docstring quotes it) but `_refresh_first_observation` changes
+more than the first frame: two extra `sim.render()` calls plus
+`sensor.update(0.0, force_recompute=True)` most likely offset the annotator
+buffers for the rest of the episode (every later capture one frame further
+behind), which is why a deterministic, much worse policy comes out. **Do not
+use the flag for any row.** Keep the patch file as a harness debt with this
+evidence; a later test can try a single render without the forced sensor
+update, or a warm-up capture discarded before the first `client.infer`.
+
+**Decision (orchestrator, 21:05): the rows run now, without the flag, with
+`--server-seed 20260905` on every row (per-episode reseeding = the same noise
+draws across all rows, a paired design across checkpoints), on `/tmp`.**
+Launched by the orchestrator at ~21:10, one per device, ports 8601–8608 —
+adopt them, never relaunch:
+
+```
+lane_a  R3 checkpoint-20000   /tmp/franka-sonic/lane_a/2026-09-05_finetune-2/out/checkpoints/checkpoint-20000
+lane_a  R3 checkpoint-17500   .../2026-09-05_finetune-2/.../checkpoint-17500
+lane_a  R3 checkpoint-15000   .../2026-09-05_finetune-2/.../checkpoint-15000
+lane_b  R3 checkpoint-17500   /tmp/franka-sonic/lane_b/2026-09-05_finetune-2/out/checkpoints/checkpoint-17500   (best by screen, 19/20)
+lane_b  R3 checkpoint-20000   .../2026-09-05_finetune-2/.../checkpoint-20000
+lane_b  R3 checkpoint-10000   .../2026-09-05_finetune-2/.../checkpoint-10000   (re-run, seeded; the 185/200 row had 7 dead episodes)
+lane_a  R2 checkpoint-20000   /tmp/franka-sonic/lane_a/2026-09-05_finetune/out/checkpoints/checkpoint-20000     (round-2 headline, re-measured)
+lane_b  R2 checkpoint-17500   /tmp/franka-sonic/lane_b/2026-09-05_finetune/out/checkpoints/checkpoint-17500     (round-2 headline, re-measured)
+```
+
+Each row folder is named in `/tmp/franka-sonic/p11/orch_rows.txt` (label →
+run folder). ~4.2 h; done ~01:30.
+
+**Reporting rules for the rows, given the artefact is not fixed:** every row
+carries its per-episode string (1 / z / 0), the number of dead episodes and
+their positions, the all-200 rate and the held-out 20–199 rate. The verdict
+sentence uses the **20–199 slice** (the artefact concentrates in a run's
+first episodes) and shows all-200 next to it; the two round-2 re-runs replace
+the round-2 headline numbers in the comparison, with the original rows kept in
+the appendix. The pre-registered picks stand: lane A `checkpoint-20000`,
+lane B `checkpoint-17500`.
+
+**Gate hygiene:** write the two winner lines bare, no backticks —
+`P11 BEST lane_a=/tmp/franka-sonic/lane_a/2026-09-05_finetune-2/out/checkpoints/checkpoint-20000` and
+`P11 BEST lane_b=/tmp/franka-sonic/lane_b/2026-09-05_finetune-2/out/checkpoints/checkpoint-17500`
+(the gate greps `[^ ]+` after `=` and takes the last match; the existing
+lane_a line ends in a backtick and would fail as "not a directory"). Then WP
+11.7 report (round-2 vs round-3 per lane on the same seeded evaluation, four
+oracle rows per distribution, the artefact section with the six-run
+validation table above, the contamination of the original round-2 rows) and
+WP 11.8 close. GATE P11 = `bash harness/gates/p11.sh`.
+
 ## 19:40 UTC (2026-09-05) — the artefact is LOAD-DEPENDENT (seeding is a red herring); validate the fix under load, then the eight rows with fix + seed
 
 READ BEFORE ACTING ON THE SEEDED PAIR. Seeding is a red herring: your two UNSEEDED controls (eval-15/16, started 19:28) are just as clean so far (0.667 1 1 1 1 each), and B@17500's unseeded screen at 19:00 was 19/20 with no dead episode — while every run with dead stretches (eval-5 15:31 4 dead, eval-6 16:15 7 dead, eval-11 18:32 9 dead, A@12500 15:43 19 dead, and the round-2 rows) ran while two trainers + 4-6 evals + the home drain loaded the pod; since 18:41 lane A's trainer is gone. The artefact is LOAD/TIMING-DEPENDENT, which is what a render race at reset looks like: under load, capture() after env.reset() reads a not-yet-rendered (previous-episode) frame. Consequences: (1) a quiet-time validation proves nothing — validate UNDER LOAD; (2) the 8 rows on 8 devices will recreate the load, so they must carry the fix; (3) seeding is still worth keeping for reproducibility (report the seed), but it is not the fix. DO: (a) implement the fix as an opt-in flag in evaluation/eval.py (e.g. --fresh-first-obs: after env.reset()+sync_wrist_cam_fabric, force a render and update the camera sensors — u.sim.render() + the scene/sensor update Isaac Lab needs — then capture(); keep a patch file of it under harness/ and note it in the WORKLOG, since it is an upstream working tree); also log per episode the max |joint delta| of the first 40 commanded targets in both servers so the whip is visible; (b) VALIDATE UNDER LOAD: while lane B still trains, launch simultaneously 3 FIXED and 3 UNFIXED 20-rollout screens of B@10000 on 6 devices (stop or wait for eval-8/15/16 as needed) — pass if the fixed runs show no dead episode and the unfixed show some; (c) then, with the fix + --server-seed on every row, the 200-rows: lane A 20000, 17500, 15000; lane B 17500, 20000 (after ~20:35) and 10000 (re-run fixed; 12500/15000 only if a fixed screen ranks them higher); plus the two round-2 headline re-runs (lane A checkpoint-20000 of /tmp/franka-sonic/lane_a/2026-09-05_finetune, lane B checkpoint-17500 of /tmp/franka-sonic/lane_b/2026-09-05_finetune). 8 rows, 8 devices, ~4.5 h. Full text: 19:40 entry in plan/ORCHESTRATOR_NOTES.md. Attempt 2 starts ~19:52 and must carry this.

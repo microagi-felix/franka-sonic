@@ -1286,3 +1286,12 @@ P11 BEST lane_a=/tmp/franka-sonic/lane_a/2026-09-05_finetune-2/out/checkpoints/c
 - 2026-09-05 19:41  bakeoff lane_b/eval OK  rc=0  gpus=6  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-16
 - 2026-09-05 19:42  bakeoff lane_b/eval OK  rc=0  gpus=5  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-15
 - 2026-09-05 19:52  BLOCKED: driver gave up on P11 after 3 attempts (logs: /home/felixminzenmay/runs/franka-sonic/driver/2026-09-05/P11-attempt-*.log)
+- 2026-09-05 20:06  bakeoff lane_b/eval OK  rc=0  gpus=2  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-20
+- 2026-09-05 20:06  bakeoff lane_b/eval OK  rc=0  gpus=0  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-21
+- 2026-09-05 20:11  bakeoff lane_b/eval OK  rc=0  gpus=4  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-22
+- 2026-09-05 20:15  bakeoff lane_b/eval OK  rc=0  gpus=1  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-18
+- 2026-09-05 20:15  bakeoff lane_b/eval OK  rc=0  gpus=6  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-19
+- 2026-09-05 20:16  bakeoff lane_b/eval OK  rc=0  gpus=5  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-17
+- 2026-09-05 20:18  bakeoff lane_b/finetune OK  rc=0  gpus=3,7  run=/tmp/franka-sonic/lane_b/2026-09-05_finetune-2
+- 2026-09-05 20:38  bakeoff lane_b/eval OK  rc=0  gpus=5  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-23
+- 2026-09-05 21:05  DRIVER: resume — attempts 2 and 3 died in seconds on the account usage limit ("You've hit your session limit · resets 9pm (UTC)"), not on the work; limit reset at 21:00; restarted by the orchestrator (see the 21:05 orchestrator note: rows launched unfixed + seeded, fresh-first-obs patch not to be used)

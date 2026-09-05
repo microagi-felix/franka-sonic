@@ -1,0 +1,60 @@
+diff --git a/evaluation/config.py b/evaluation/config.py
+index e29e1e4..ff072f3 100644
+--- a/evaluation/config.py
++++ b/evaluation/config.py
+@@ -314,6 +314,12 @@ class EvalArgs:
+     unscored: bool = False  # explicitly allow a task with no registered rubric
+     # zoh preserves every recorded run; linear ramps verified Sharpa joint targets at physics rate.
+     hand_command_mode: str = "zoh"
++    # Render after every reset and re-read the capture cameras, so an episode's first image is
++    # its own and not the previous episode's last frame (Isaac Lab renders
++    # `num_rerenders_on_reset` = 0 times inside `env.reset`). False leaves a run bit-identical to
++    # every run recorded before the flag existed, which is why it is opt-in rather than the
++    # default: it changes what the policy sees on step 0 of each episode.
++    fresh_first_obs: bool = False
+ 
+     @property
+     def fail_closed(self) -> bool:
+diff --git a/evaluation/eval.py b/evaluation/eval.py
+index 33cdda0..9ae13a6 100644
+--- a/evaluation/eval.py
++++ b/evaluation/eval.py
+@@ -70,6 +70,29 @@ def _warm_camera_annotators(sim, frames: int = 3) -> None:
+         sim.render()
+ 
+ 
++def _refresh_first_observation(sim, scene, capture_cameras, frames: int = 2) -> None:
++    """Re-render and re-read the capture cameras so an episode's first image is its own.
++
++    `ManagerBasedEnv.reset` renders `cfg.num_rerenders_on_reset` times after writing the new
++    scene state, and that default is 0 — Isaac Lab's own words: "no render step will be
++    performed after reset. Data collected from sensors after performing reset will be stale and
++    will not reflect the latest states in simulation caused by the reset". `scene.reset()` marks
++    the sensors outdated, so the first `capture()` does re-read the annotators, but the
++    annotators still hold the frame rendered for the *previous* episode's last step. The policy
++    then plans its first 40-step chunk from the previous episode's image paired with post-reset
++    proprioception, which is what the whipped first chunk in P11's failing episodes looks like.
++
++    Rendering is not enough on its own: the sensors are refreshed with `force_recompute` so the
++    annotator read happens here, after the render, rather than lazily at some later access.
++    `dt=0.0` keeps the sensors' own clock where the episode left it.
++    """
++    _warm_camera_annotators(sim, frames)
++    for name in capture_cameras:
++        sensor = scene[name]
++        if hasattr(sensor, "update"):
++            sensor.update(0.0, force_recompute=True)
++
++
+ def _resolve_rate(rate: float | None, default_hz: float) -> float:
+     """The single control rate the run uses: the explicit flag, else the caller's default.
+ 
+@@ -1519,6 +1542,8 @@ def _main(eval_args: EvalArgs, policy_args: PolicyArgs) -> int:
+         try:
+             env.reset(seed=eval_args.seed + episode)
+             sync_wrist_cam_fabric(u)
++            if eval_args.fresh_first_obs:
++                _refresh_first_observation(u.sim, u.scene, capture_cameras)
+             rubric.reset()
+             client.reset()
+             cap = capture()

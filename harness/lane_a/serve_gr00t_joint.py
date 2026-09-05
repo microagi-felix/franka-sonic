@@ -205,6 +205,11 @@ class JointPolicyServer:
         self.chunk: np.ndarray | None = None
         self.step_in_chunk = 0
         self.episode = 0
+        self._first_chunk_rows = 0  # P11: rows of the episode's first chunk already measured
+        self._first_state = None
+        self._prev_target = None
+        self._max_dev = 0.0
+        self._max_step = 0.0
         self.requests = 0
         self.replans = 0
         # P11 (2026-09-05): GR00T N1.7 samples its action chunk, and nothing here ever seeded
@@ -284,6 +289,44 @@ class JointPolicyServer:
         self.step_in_chunk += 1
         return dataset_to_wire(row)
 
+    def _track_first_chunk(self, request: dict, action: np.ndarray) -> None:
+        """Measure how violent an episode's first 40 commanded targets are (P11).
+
+        Some episodes start with a whipped first action chunk -- within 0.16 s the arm is in a
+        flipped-wrist pose and the episode is lost -- and the run-level version of that is what
+        P11 is chasing. `max_dev_rad` is the largest deviation those targets ask for from the
+        episode's own first measured state, `max_step_rad` the largest step between consecutive
+        targets. Radians over the 14 arm joints, grippers excluded. Read from the wire, so both
+        lanes measure the same thing even though lane B's rows come out of the SONIC decoder one
+        at a time. `episode` counts resets, so it is the evaluator's episode index + 1, exactly
+        like the existing `[serve] reset -> episode N` line.
+        """
+        if self._first_chunk_rows >= ACTION_HORIZON:
+            return
+        row = np.asarray(action, dtype=np.float32).reshape(-1)
+        joints = np.concatenate([row[0:ARM_DOF], row[ARM_DOF + 1 : 2 * ARM_DOF + 1]])
+        if self._first_chunk_rows == 0:
+            state = np.asarray(request["state"], dtype=np.float32).reshape(-1)
+            self._first_state = np.concatenate(
+                [state[0:ARM_DOF], state[ARM_DOF + 1 : 2 * ARM_DOF + 1]]
+            )
+            self._prev_target = self._first_state
+            self._max_dev = self._max_step = 0.0
+        self._max_dev = max(self._max_dev, float(np.abs(joints - self._first_state).max()))
+        self._max_step = max(self._max_step, float(np.abs(joints - self._prev_target).max()))
+        self._prev_target = joints
+        self._first_chunk_rows += 1
+        if self._first_chunk_rows == ACTION_HORIZON:
+            self._log_first_chunk()
+
+    def _log_first_chunk(self) -> None:
+        if self._first_chunk_rows:
+            print(
+                f"[serve] FIRSTCHUNK episode={self.episode} rows={self._first_chunk_rows} "
+                f"max_dev_rad={self._max_dev:.3f} max_step_rad={self._max_step:.3f}",
+                flush=True,
+            )
+
     # ---------------------------------------------------------------- handlers
 
     def handle(self, request: dict) -> dict:
@@ -291,6 +334,9 @@ class JointPolicyServer:
             raise TypeError(f"expected a dict request, got {type(request).__name__}")
         kind = request.get("type")
         if kind == "reset":
+            if self._first_chunk_rows and self._first_chunk_rows < ACTION_HORIZON:
+                self._log_first_chunk()  # episode ended inside its own first chunk
+            self._first_chunk_rows = 0
             self.chunk = None
             self.step_in_chunk = 0
             self.episode += 1
@@ -300,6 +346,7 @@ class JointPolicyServer:
         if kind == "act":
             self.requests += 1
             action = self._next_row(request)
+            self._track_first_chunk(request, action)
             if self.args.log_every and self.requests % self.args.log_every == 0:
                 print(
                     f"[serve] heartbeat requests={self.requests} replans={self.replans} "

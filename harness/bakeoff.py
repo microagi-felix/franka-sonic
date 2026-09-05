@@ -945,8 +945,12 @@ def stage_eval(run: Run) -> int:
     # run-to-run spread (lane B checkpoint-10000: 16/20, 185/200, 7/20) is the unseeded sampler.
     if getattr(run.args, "server_seed", None) is not None:
         server_cmd += ["--seed", str(run.args.server_seed)]
-    eval_cmd = _eval_cmd(run, eval_out, "ZmqAct",
-                         ["--endpoint", f"tcp://127.0.0.1:{port}", "--grip-threshold", "0.5"])
+    eval_extra = ["--endpoint", f"tcp://127.0.0.1:{port}", "--grip-threshold", "0.5"]
+    # P11 (2026-09-05): the stale-first-observation fix, opt-in so every round-1/2/3 run stays
+    # comparable unless the flag is passed. See evaluation/eval.py:_refresh_first_observation.
+    if getattr(run.args, "fresh_first_obs", False):
+        eval_extra.append("--fresh-first-obs")
+    eval_cmd = _eval_cmd(run, eval_out, "ZmqAct", eval_extra)
     run.write_readme(
         what=(f"{server_py.relative_to(REPO)} on {ckpt} (GPU {server_dev}, port {port}, 40-step "
               f"chunk replanned every 20 steps{'; SONIC decoder ONNX inside the server at 50 Hz' if run.lane == 'lane_b' else ''}) "
@@ -1618,6 +1622,11 @@ def main(argv=None) -> int:
     r.add_argument("--server-seed", type=int, default=None,
                    help="eval: seed the policy server's RNGs with <seed> + episode index "
                         "(off by default — rounds 1-3 ran unseeded and stay comparable)")
+    r.add_argument("--fresh-first-obs", action="store_true",
+                   help="eval: render + re-read the cameras after every env.reset, so an episode's "
+                        "first image is its own and not the previous episode's last frame "
+                        "(Isaac Lab's num_rerenders_on_reset defaults to 0). Off by default — "
+                        "rounds 1-3 ran without it")
     r.add_argument("--sonic-overrides", default="",
                    help="lane_b sonic_rl/export_onnx/decoder_replay: extra Hydra overrides appended "
                         "to the gear_sonic command, e.g. '++manager_env.config.robot.type=dual_fr3_stiff'")
