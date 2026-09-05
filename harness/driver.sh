@@ -199,12 +199,33 @@ run_phase() {             # $1 = phase, $2 = previous phase or ""
     return 1
   fi
 
-  for k in $(seq 1 "$ATTEMPTS"); do
+  local k=1 pauses=0
+  while [ "$k" -le "$ATTEMPTS" ]; do
     logf="$LOGDIR/$phase-attempt-$k.log"
     log "$phase attempt $k/$ATTEMPTS (timeout $PHASE_TIMEOUT, model $MODEL, effort $EFFORT) -> $logf"
     run_attempt "$phase" "$k" "$logf"
     rc=$?
     log "$phase attempt $k finished rc=$rc"
+
+    # 2026-09-05: the pod agent shares the account's usage limit. When `claude -p` dies in
+    # seconds on it, that is not a failed attempt — pause until the reset it names (or 30 min)
+    # and run the SAME attempt number again. Attempts 2 and 3 of P11 burned this way in one
+    # minute and the driver gave up while every measurement was still running.
+    if grep -qiE "hit your (session|usage) limit|usage limit|rate limit" "$logf" 2>/dev/null && [ "$pauses" -lt "${DRIVER_MAX_LIMIT_PAUSES:-12}" ]; then
+      pauses=$((pauses + 1))
+      local wait_s hr ampm now_h now_m
+      wait_s=1800
+      hr=$(grep -oiE "resets [0-9]{1,2}(am|pm)" "$logf" | head -1 | grep -oE "[0-9]{1,2}"); ampm=$(grep -oiE "resets [0-9]{1,2}(am|pm)" "$logf" | head -1 | grep -oiE "am|pm" | tr A-Z a-z)
+      if [ -n "$hr" ]; then
+        [ "$ampm" = "pm" ] && [ "$hr" -lt 12 ] && hr=$((hr + 12)); [ "$ampm" = "am" ] && [ "$hr" -eq 12 ] && hr=0
+        now_h=$(date -u +%H | sed 's/^0//'); now_m=$(date -u +%M | sed 's/^0//')
+        wait_s=$(( (hr - now_h) * 3600 - now_m * 60 + 120 )); [ "$wait_s" -le 0 ] && wait_s=$((wait_s + 86400)); [ "$wait_s" -gt 21600 ] && wait_s=1800
+      fi
+      log "$phase attempt $k died on the account usage limit — pausing ${wait_s}s (pause $pauses), not counting the attempt"
+      status_append "DRIVER: usage-limit pause ${wait_s}s before re-running $phase attempt $k (pause $pauses)"
+      sleep "$wait_s"
+      continue
+    fi
 
     if status_pass "$phase"; then
       log "$phase: GATE PASS found in STATUS.md"
@@ -226,6 +247,7 @@ run_phase() {             # $1 = phase, $2 = previous phase or ""
     # Backoff, so a `claude -p` that fails in seconds (auth, quota) does not
     # burn all three attempts in a minute.
     [ "$k" -lt "$ATTEMPTS" ] && sleep "${DRIVER_BACKOFF_SECONDS:-60}"
+    k=$((k + 1))
   done
 
   status_append "BLOCKED: driver gave up on $phase after $ATTEMPTS attempts (logs: $LOGDIR/$phase-attempt-*.log)"
