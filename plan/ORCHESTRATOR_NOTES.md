@@ -2,6 +2,69 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 00:30 UTC (2026-09-05, P9) — the mirror is done (I ran it); now switch lane A. And your poll filter is hiding my notes.
+
+**Your `poll.sh` line 54 is `grep -a "^lane_"`**, so every orchestrator line I
+inject into `series.txt` starting with `#` is filtered out — that is why the
+00:15 note did not reach you. Either widen that grep or read
+`plan/ORCHESTRATOR_NOTES.md` at the top of every poll. I am prefixing this one
+`lane_ORCHESTRATOR` so your existing filter catches it (the stopping rule's
+regex requires `lane_[ab]\s+step`, so it ignores such lines safely).
+
+**Done for you, already running, do not redo:** `/tmp/franka-sonic/p9/mirror.sh`
+(nohup setsid, log `mirror.log`, `df.log`) copies every settled checkpoint to
+`/tmp/franka-sonic/p9/ckpt_mirror/<lane>/checkpoint-N` and samples `df` every
+2 min. All four existing checkpoints are mirrored and size-verified at 34 GB
+each. It copies only, never moves, never deletes.
+
+**Correction to my 00:15 note:** `resume_from_checkpoint` is a **bool**, not a
+path (`gr00t/configs/training/training_config.py:76`) — HF Trainer resumes from
+the *last checkpoint inside `output_dir`*. So the new `/tmp` output dir must
+already contain the checkpoint to resume from. That is what the mirror is for.
+`save_only_model` is False (default), so the checkpoints carry optimizer,
+scheduler and RNG state — `check_resume_compatibility` exists precisely to
+enforce that pairing, and 34 GB per checkpoint (≈6 GB bf16 weights + ≈24 GB
+optimizer) confirms the state is there.
+
+### Switch lane A NOW, lane B at its 7500 boundary
+
+Home was 1618 GB at 00:26 and is falling ~900 GB/h; the 600 GB floor arrives
+about 01:30. Lane A's `checkpoint-5000` has landed and is mirrored, so
+switching costs only the ~300 steps since it. Lane B's 7500 lands ~00:53 —
+wait for it (that costs nothing) **unless home drops below 1100 GB first**, in
+which case switch lane B from 5000 immediately.
+
+Per lane, at its boundary:
+
+1. `mkdir -p /tmp/franka-sonic/<lane>/2026-09-05_finetune/out/checkpoints` and
+   `cp -a` the mirrored `checkpoint-<N>` into it (the mirror is the source; the
+   home copy stays untouched).
+2. SIGTERM the recorded pgid, SIGKILL the python by pid, verify with `ps`.
+3. Relaunch the **same command** from that lane's `cmd.sh` with two changes:
+   `--output-dir /tmp/franka-sonic/<lane>/2026-09-05_finetune/out/checkpoints`
+   and the resume flag (confirm its exact spelling with
+   `launch_finetune --help`; the field is `resume_from_checkpoint`). Everything
+   else — base model, dataset path, modality config, `--max-steps 20000`,
+   `--save-steps 2500`, `--global-batch-size 32`, colour jitter, 4 workers,
+   `--save-total-limit 12`, the device set, the master port — stays identical.
+   Machine-diff it against `cmd.sh` as you did at launch and record the diff.
+4. **Verify the resume took** before walking away: the progress bar must start
+   near N/20000, not 0/20000, and the first logged `learning_rate` must sit on
+   the cosine curve at step N (step 2500 logged 9.847e-5 and it decreases from
+   there). If it starts at 0, kill it, restore the home-side trainer if it is
+   still alive, and write `BLOCKED: resume did not restore global step`.
+
+**Staggering the two lanes is fine** — I withdraw the "both or neither" wording
+from 00:15. Storage location does not touch the optimisation; a resume restores
+optimizer, scheduler and RNG state, so each lane's trajectory continues as if
+uninterrupted. What must stay identical between lanes is the recipe, not the
+filesystem.
+
+Record in STATUS, per lane: the switch step, the old and new run folders, the
+verified resumed step and LR, and that the pre-switch folder on home is kept
+(never deleted). The P10 report must say each lane trained across two run
+folders and why.
+
 ## 00:15 UTC (2026-09-05, P9) — URGENT: home is draining from outside. Move both fine-tunes to /tmp at their next checkpoint boundary.
 
 **Measured, not projected.** Home free: 2495 GB at 21:40, 2472 at 22:06, 1859 at
