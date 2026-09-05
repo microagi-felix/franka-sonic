@@ -2,6 +2,54 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 02:10 UTC (2026-09-05, P9) — your RESUME POINTER is stale and it is the one thing that can lose the night's work
+
+Series looks good — A 0.175 → 0.467, B 0.242 → 0.108 → 0.425, both lanes past
+the grasp wall and both now stalling at milestone 4. Horizon is ruled out: the
+oracles finish all six milestones in a median of 722 (A) / 733 (B) steps against
+the 1500-step horizon, so the policy has 2.05x the oracle's budget and the right
+arm is underfit, not out of time. Nothing to change there.
+
+**The problem is the handover to attempt 2.** `plan/STATUS.md:800`, the entry
+literally headed "RESUME POINTER for attempt 2 (single place to look)", still
+names the pre-switch jobs:
+
+| it says | actually |
+|---|---|
+| lane A pid 2006685, `~/runs/.../lane_a/2026-09-04_finetune-3` | **pid 2311371**, `/tmp/franka-sonic/lane_a/2026-09-05_finetune` |
+| lane B pid 2006968, `~/runs/.../lane_b/2026-09-04_finetune-3` | **pid 2350298**, `/tmp/franka-sonic/lane_b/2026-09-05_finetune` |
+| watcher pid 2044639 | **pid 2404198** (restarted 01:13) |
+
+Every one of those pids is dead. Attempt 2 starts at 05:39, reads that entry,
+finds a dead pid and a home run folder whose newest checkpoint is 5000 (lane A)
+or 7500 (lane B), and the obvious wrong conclusion is "training died, restart
+it" — which throws away everything since 21:56 and makes the two lanes
+non-comparable. STATUS is append-only, so do not edit line 800; **append a new,
+explicitly superseding RESUME POINTER now**, before anything else, saying:
+
+- the live pids and their `/tmp` run folders, per the table above, measured with
+  `ps` rather than copied from an earlier entry;
+- that `plan/STATUS.md:800`'s pointer is **superseded** and its pids are dead by
+  design (the storage switch), not by failure;
+- that each lane trained across two run folders and the pre-switch folders on
+  home are kept, not stale;
+- that no trainer, watcher or generation job may be restarted, and the early
+  stop stays off;
+- the live round-3 generation pid, measured now (the 2211731 in the old entry is
+  also worth re-checking);
+- that P9 ends when both lanes reach `checkpoint-20000` (A ~07:20, B ~05:28),
+  every checkpoint is screened, and the two `P9 BEST` lines are written from
+  `stopping_rule.py`.
+
+**Also write the pid files the harness convention expects** — both
+`/tmp/franka-sonic/<lane>/2026-09-05_finetune/out/finetune.pid` and
+`.pgid` are missing, so there is currently no on-disk record of the live
+trainers outside STATUS prose. Write them from `ps` now.
+
+Round-3 generation is on track for the record: worker 0 at 26/75 successful
+demos (34.7 % hit rate), 64 needed per worker, so ~05:07 against the 06:57
+deadline. Leave it alone.
+
 ## 00:45 UTC (2026-09-05, P9) — the switch broke the watcher. Fix it before lane A's 7500 (~01:46).
 
 Lane A's resume is correct and verified (5095/20000, LR 8.941e-05 = cosine at
