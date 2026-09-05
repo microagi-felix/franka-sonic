@@ -2,6 +2,57 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 19:05 UTC (2026-09-05, P11 attempt 1) — ROW vs SCREEN NON-REPRODUCIBILITY: the same checkpoint scores 16/20 in one run and 1/33 in another; the videos show a violent first action chunk in the failing episodes
+
+**Facts (all measured):** lane B `checkpoint-12500` — screen `eval-7` (dev 4,
+17:14) 16/20, milestones 100/100/100/100/85/80; 200-row `eval-8` (dev 1,
+17:50) 1/33, milestones 100/100/100/82/4/4. The two `cmd.sh` files are
+identical except the port; both name the same checkpoint dir (safetensors
+unchanged since 16:40) and the same decoder ONNX; server replan latency
+(median ~100 ms, p90 ~140 ms) and sim step time (45–47 ms) are the same;
+CUDA is healthy on every idle device (the "CUDA being in bad state" lines are
+Kit enumerating the seven hidden GPUs and appear 14× in every run); the
+observation videos are rendered correctly (no black/stale frames).
+`B@10000`'s own 200-row (`eval-6`, 185/200) failed episodes 1–6 at progress
+0.00 and 7–10 at ≤ 0.67 before going near-perfect from episode 11.
+
+**What the frames show** (`/tmp/franka-sonic/p11/orch_frames/*.png`): frame 0
+of the failing `eval-8` episode 5 is identical to frame 0 of the successful
+`eval-7` episode 5 — same home pose, same spawn. By frame 8 (0.16 s) the
+failing episode's left arm has whipped into a flipped-wrist configuration;
+by frame 20 it is contorted over the block. The good run descends gently.
+Lane A's failing screen episodes show the same first-chunk whip. So the
+difference between the runs is a **bad first action chunk in some
+episodes/runs**, not the weights.
+
+**Candidate causes, in the order to check:** (a) the first observation sent
+to the policy is pre-reset (previous episode's final image/state) while the
+recorded frame is post-reset — a reset/observe race in the ZmqAct client;
+(b) the server's action chunk or the SONIC decoder's history state is not
+cleared at episode reset, so the first ≤ 40 steps replay the previous
+episode's tail (episode 0 of a run would then be clean and the damage would
+depend on the previous episode's end); (c) the flow-matching sampling noise
+is unseeded and the first chunk has heavy-tailed variance; (d) something
+run-level in GR00T's state history (`max_state_dim`, sincos state
+encoding) that depends on request timing.
+
+**Do now:** (1) no further 200-rollout rows until this is understood — the
+running ones may finish; (2) read `harness/lane_b/serve_gr00t_sonic_joint.py`,
+lane A's server and the ZmqAct client for the reset path (chunk cleared?
+decoder/history reset? first observation guaranteed post-reset? RNG
+seeding?); (3) instrument: per episode, log the max |Δjoint| of the first 40
+commanded targets and the previous episode's termination reason, then
+correlate with failure across the finished runs; (4) two orchestrator control
+screens are running on idle devices (`/tmp/franka-sonic/p11/orch_ctrl_b_12500.log`,
+`orch_ctrl_b_10000.log`, ports 8905/8904, run folders under `/tmp`) — read
+their results before concluding anything about `checkpoint-12500`.
+
+**Implication for the report, whatever the cause:** a run is not a clean
+sample of a checkpoint. Every row and screen in rounds 2 and 3 carries a
+run-level term; report the two `checkpoint-12500` runs side by side as the
+measurement of that term, and treat the fix (or its absence) as the first
+item of the harness debts.
+
 ## 16:45 UTC (2026-09-05, P11 attempt 1) — THE WATCHER IS WEDGED: two zombie launchers, nothing launched since 15:43, lane A checkpoint-15000 is landing unscreened
 
 Measured at 16:39: `watcher.py` pid 2737 is asleep in `hrtimer_nanosleep` with
