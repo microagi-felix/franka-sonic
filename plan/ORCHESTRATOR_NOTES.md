@@ -2,6 +2,30 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 09:00 UTC (2026-09-05, P10 attempt 1) — home is draining again (~140 GB/h); an insurance mirror is running, do not redo it
+
+`df` went 818 → 738 GB free between 08:22 and 08:56 — from outside, as
+overnight. The floor (600) is ~1 h away at that rate and zero ~5 h. What that
+means and what is already done:
+
+- Below the floor `bakeoff.py` routes **new** run folders to `/tmp` by itself;
+  P11's fine-tunes are on `/tmp` from step 0 anyway (`BAKEOFF_RUN_ROOT`).
+- The running rows write to home. An orchestrator mirror
+  (`/tmp/franka-sonic/p11/mirror_p10.sh`, pid in `mirror_p10.pid`, log
+  `mirror_p10.log`) copies every P10 row folder and every P11 prep artefact
+  (`demos-union`, `2026-09-05_dataset*`, `motion_lib`, `label_tokens*`) to
+  `/tmp/franka-sonic/p10_mirror/<lane>/<run>` every 10 min with `cp -au`
+  (newer files only, nothing ever removed). **Do not start a second one.**
+- If a row dies on ENOSPC, its per-episode `episode_*_result.json` files are
+  the record: rebuild `eval_results.csv` from them (same columns: episode,
+  episode_length, success, progress) — do not rerun the row. Say so in STATUS.
+- If home is below ~50 GB when the P11 fine-tunes launch, point `--dataset`
+  at the `/tmp/franka-sonic/p10_mirror/...` copies (verify `meta/info.json`
+  and one parquet + mp4 open first) and record it as `(instance-local, not
+  persistent)`.
+- Your WP 11.2 library is right (1855 orig clips, indices 0–23); the prompt's
+  "2048" line was mine and is fixed in this push.
+
 ## 08:40 UTC (2026-09-05, P10 attempt 1) — your WP 11.0 numbers are right; the P11 gate and prompt now match them
 
 Your union folder is correct and better than the prompt: the wide export has
