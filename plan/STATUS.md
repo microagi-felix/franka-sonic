@@ -896,3 +896,27 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
         lane_b  2500 0/20 .242 | 5000 0/20 .108 | 7500 0/20 .425 | 10000 0/20 .100 | 12500 **3/20** .275 | 15000 **5/20** .525 | 17500 **13/20** .775
     Provisional selection: lane_a = checkpoint-7500 (1/20), lane_b = **checkpoint-17500 (13/20)**. Still provisional — the two literal `P9 BEST` lines are written only when both lanes have reached checkpoint-20000 and all sixteen screens exist.
     Trainers: lane A 14427/20000 (~05:19 for its 15000 checkpoint, ~07:20 for 20000), lane B 18477/20000 (**20 000 at ~05:38**, i.e. within minutes of this session's 05:39 cap). Guard `ok` on every sample tonight. Home 961 GB, /tmp 10 254 GB. Round-3 generation 337 MB (~820 of 1024 episodes).
+- 2026-09-05 05:24  **P9 ATTEMPT 1 HANDOVER — read this entry and the 02:42 RESUME POINTER v2; ignore the pointer at plan/STATUS.md:800.** P9 is not finished and its gate has not been run. Nothing is blocked; the phase simply needs more wall-clock than one 8 h session, exactly as the 23:40 note predicted when it turned the early stop off.
+    **STATE AT THE CAP.** lane A 15061/20000 (six checkpoints: 2500…15000), lane B 19280/20000 (seven: 2500…17500, 20000 due ~05:38). Twelve of the sixteen screens are done. All four detached jobs are healthy and must be left alone:
+        lane A fine-tune  pid/pgid 2311371  /tmp/franka-sonic/lane_a/2026-09-05_finetune  devices 1,5   20 000 at ~07:20
+        lane B fine-tune  pid/pgid 2350298  /tmp/franka-sonic/lane_b/2026-09-05_finetune  devices 6,7   20 000 at ~05:38
+        screening watcher pid/pgid 2404198  /tmp/franka-sonic/p9/watcher.py               screens each new checkpoint by itself
+        round-3 demos     pid/pgid 2211731  ~/runs/franka-sonic/shared/2026-09-04_demos-2 devices 2,3   ~820 of 1024 episodes
+    **THE SERIES (WP 9.2), twelve screens, 20 rollouts each, round-1 binding throughout — success/20, mean progress, six milestone rates:**
+        lane_a   2500   0/20  0.175   85 / 10 / 10 /  0 /  0 /  0
+        lane_a   5000   0/20  0.467  100 / 90 / 90 /  0 /  0 /  0
+        lane_a   7500   1/20  0.392   75 / 55 / 55 / 40 /  5 /  5
+        lane_a  10000   0/20  0.108   25 / 20 / 20 /  0 /  0 /  0
+        lane_a  12500   0/20  0.242   60 / 40 / 40 /  5 /  0 /  0
+        lane_b   2500   0/20  0.242   95 / 25 / 20 /  5 /  0 /  0
+        lane_b   5000   0/20  0.108   20 / 20 / 20 /  5 /  0 /  0
+        lane_b   7500   0/20  0.425  100 / 70 / 70 / 15 /  0 /  0
+        lane_b  10000   0/20  0.100   25 / 15 / 15 /  5 /  0 /  0
+        lane_b  12500   3/20  0.275   40 / 35 / 35 / 25 / 15 / 15
+        lane_b  15000   5/20  0.525  100 / 60 / 60 / 45 / 25 / 25
+        lane_b  17500  13/20  0.775  100 / 80 / 80 / 75 / 65 / 65
+    **THE HEADLINE SO FAR: lane B is at 13/20 = 65 % and still rising at 17 500**, against round 1's 1/20 for the same lane and 0/20 for lane A. Lane A has produced one success (7500) and is 5 000 steps behind lane B in wall-clock, not in schedule — both ran the identical 20 000-step recipe; lane A is simply slower per step (1.66-1.77 s/it vs 1.28-1.49). **Lane A's own 15 000 and 17 500 screens are the ones that decide whether the bake-off's answer is "the token interface wins" or "both get there and lane A is later"** — do not let anyone conclude the former from this entry, because lane B's own 15 000 screen was 5/20 and its 17 500 was 13/20.
+    **WHAT ATTEMPT 2 MUST DO, in order.** (1) Confirm the four pids above with `ps`; if the pod has NOT restarted they are all alive and nothing is relaunched. (2) Wait for both lanes to reach `checkpoint-20000` and for the watcher to screen every checkpoint — `bash /tmp/franka-sonic/p9/poll.sh 32` is one bounded poll and shows everything. (3) Run `python3 /tmp/franka-sonic/p9/stopping_rule.py`, then append the two literal lines `P9 BEST lane_a=<dir>` and `P9 BEST lane_b=<dir>` from its output. (4) `bash harness/gates/p9.sh`, then the WP 9.4 entry with the full series, GPU-hours and wall-clock. (5) Copy the two winning checkpoints to `~/runs/franka-sonic/<lane>/final/p9/` (HARD RULE 3 — they are on /tmp; home had 944 GB free at 05:19, well above the 100 GB the rule asks for). (6) For round 3: `harness/data/jointpos_screen.py` over `~/runs/franka-sonic/shared/2026-09-04_demos-2` once its export finishes — it wants all 8 devices, so it comes after P9's trainers are done.
+    **IF THE POD HAS RESTARTED**, both /tmp halves are gone and cannot be recovered. What survives on home: each lane's pre-switch run folder (lane A through checkpoint-5000, lane B through checkpoint-7500), every screening eval folder with its CSV and per-episode jsons, and this record. That is the one failure mode this design cannot absorb; say so plainly rather than restarting training silently.
+    **GPU-HOURS AND WALL-CLOCK (attempt 1, 21:40-05:24 = 7 h 44 m).** Training 2 lanes x 2 GPUs x 7.4 h = 29.6 GPU-h; screening 12 x ~25 min x 1 GPU = 5.0; round-3 generation 2 GPUs x 5.6 h = 11.2; the four faulted 4-rank launches and the NCCL sweep ~0.4. Total ~46 GPU-h. Zero `OVER` samples on the step-time guard except one 2.57 s/it spike on lane A at 05:19, which was its own `checkpoint-15000` write (the next sample was 1.72) — the round-3 generation never cost P9 a measurable step.
+    Storage at the cap: home 944 GB free (external drain ~180 GB/h through the night, from 2495 GB at 21:40), /tmp 10 221 GB. Both lanes' remaining checkpoints go to /tmp, so home is not on the critical path any more.
