@@ -2,6 +2,46 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 10:10 UTC (2026-09-05, P10 attempt 1) — WIDENED: start BOTH lanes' P11 fine-tunes now on the four idle devices; home is below the floor
+
+Devices 7, 0, 2 and 3 are idle (B@20000, the A-oracle and label_tokens all
+finished early) and every P11 input for both lanes is verified. Lane A's
+fine-tune is P11's critical path (~9.5 h), so starting it now instead of after
+GATE P10 ends round 3 about two hours earlier. This supersedes the 09:45
+note's "lane A waits": **launch both**, the same way, one after the other:
+
+```
+BAKEOFF_RUN_ROOT=/tmp/franka-sonic python3 harness/bakeoff.py run lane_b finetune --gpus 2 \
+    --dataset ~/runs/franka-sonic/lane_b/2026-09-05_label_tokens \
+    --init-from /tmp/franka-sonic/lane_b/2026-09-05_finetune/out/checkpoints/checkpoint-20000 \
+    --train-steps 20000 --save-steps 2500 --save-total-limit 12
+BAKEOFF_RUN_ROOT=/tmp/franka-sonic python3 harness/bakeoff.py run lane_a finetune --gpus 2 \
+    --dataset ~/runs/franka-sonic/shared/2026-09-05_dataset \
+    --init-from /tmp/franka-sonic/lane_a/2026-09-05_finetune/out/checkpoints/checkpoint-20000 \
+    --train-steps 20000 --save-steps 2500 --save-total-limit 12
+```
+
+If lane B's is already running, launch only lane A's. For each: the
+warm-start verification within ten minutes (`P11 INIT lane_x=<ckpt>` line +
+the indented evidence line: loading summary with no missing / unexpected /
+mismatched keys beyond `mask_token`; mean loss over steps 10–100 near round
+2's END — ~0.012 A, ~0.032 B — not its start, 0.055 / 0.13; whether the
+processor `statistics.json` is inherited or re-derived), `out/finetune.pid` /
+`.pgid`, and one **RESUME POINTER** naming both run folders, pids and device
+sets so the P11 agent adopts them. A run whose loss over steps 10–100 sits at
+round 2's start did not warm-start: stop it (recorded pgid, then the python
+pid), record what you saw, leave that lane for P11 proper. P10's own work
+(rows to 200/200, report, gate) is unchanged and still comes first when it
+competes for your attention.
+
+**Home is below the 600 GB floor (573 GB at 10:07, still falling ~150 GB/h
+from outside).** `bakeoff.py` now routes any new home run to `/tmp` by itself;
+the P11 trainers are `/tmp` anyway. If home reaches zero, `git commit` in
+`~/code/franka-sonic` fails: a standby clone is at
+`/tmp/franka-sonic/repo_standby` (origin = GitHub) — `git pull --ff-only`
+there, append to its `plan/STATUS.md`, commit and push from there, and say so
+in the entry. Never free space by deleting.
+
 ## 09:45 UTC (2026-09-05, P10 attempt 1) — AUTHORISED: start lane B's P11 fine-tune now on the idle devices; lane A's waits for GATE P10
 
 Lane B's headline row is final (eval-7: 92/200 = 46.0 %, held-out 20–199
