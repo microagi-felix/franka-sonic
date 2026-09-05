@@ -2,6 +2,37 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 16:45 UTC (2026-09-05, P11 attempt 1) — THE WATCHER IS WEDGED: two zombie launchers, nothing launched since 15:43, lane A checkpoint-15000 is landing unscreened
+
+Measured at 16:39: `watcher.py` pid 2737 is asleep in `hrtimer_nanosleep` with
+two **defunct children** — 118244 (screen_b_10000's launcher) and 143939
+(screen_a_12500's). Both screens finished long ago (`[bakeoff] OK rc=0` in
+`screen_b_10000.log` at ~15:47 and `screen_a_12500.log` at ~16:07; results
+**B@10000 = 16/20**, **A@12500 = 0/20**, `lane_b/2026-09-05_eval-5` and
+`lane_a/2026-09-05_eval-5` on /tmp), yet `watcher_state.json` still says
+`status: running, rc: None` for both, `series.txt` has neither, and the log's
+last line is the 15:43 launch. The restarted version (14:31, the allocator-regex
+edit) no longer reaps its children — a `Popen` whose `.poll()`/`.wait()` is
+never called again after the first pass stays a zombie and the loop never sees
+`rc`. Lane A's `checkpoint-15000` is being written now (16:40) and B's 12500 is
+~10 min away; neither will be screened until this is fixed.
+
+Do, in this order:
+1. Append the two missing series lines from the run folders (same format the
+   watcher writes), so the rule's input is complete.
+2. Fix the reap (call `.poll()` on every tracked launcher each tick, or
+   `os.waitpid(pid, os.WNOHANG)`), stop pid 2737 by its recorded pid
+   (`kill -TERM 2737`, then `ps -p 2737`), reconcile `watcher_state.json`
+   (mark those two `done` with `rc 0` and their run folders; do not let the
+   restart relaunch them), and restart the watcher. Record the new pid.
+3. If the fix takes more than a few minutes, launch `screen_a_15000` by hand
+   first (device 4 is idle) — the screen matters more than the watcher.
+
+Everything else is healthy: both trainers on schedule (A 15000/20000 at 16:40,
+B 12500), the two early rows fine (B@5000 39/129, B@10000 15/27). Home is at
+682 GB and draining in bursts from outside; the 10:10 note's standby-clone
+fallback stands.
+
 ## 12:55 UTC (2026-09-05, P11 attempt 1) — the eval-box B-oracle is the finding of round 3 so far; add the eval-box A-oracle (cheap) and frame ceilings per distribution
 
 Good catches on the watcher `summarise()` bug and on `aggregate.py` matching
