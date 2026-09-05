@@ -504,6 +504,18 @@ the held-out slice, after the window where the artefact concentrates:
 
 {{R3_ROWS_DEAD_TABLE}}
 
+### 10.3b Rows stopped before 200 rollouts
+
+Four rows were stopped by the orchestrator at 21:44 UTC on 2026-09-05, part-way
+through, to drop the node from eight concurrent evaluations to four and see
+whether the lane-B collapse below was load or the checkpoint. Their partial
+results are kept — nothing was discarded — but a partial row is **not** a row:
+none of them is ranked, none appears in 10.3, and none is compared with anything.
+They are here because leaving them out would make the eight launched rows look
+like six:
+
+{{R3_STOPPED_TABLE}}
+
 ### 10.4 Round 2 against round 3, per lane
 
 Two numbers per row: the absolute success rate, which is what the stack delivers,

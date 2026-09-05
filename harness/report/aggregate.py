@@ -1102,7 +1102,7 @@ def artefact_table(entries: list[tuple[str, dict]], held_out_from: int = 20) -> 
     so each row carries the evidence needed to judge how much of it it caught."""
     header = [
         "row",
-        "all 200",
+        "all episodes run",
         f"held out {held_out_from}–199",
         "dead (progress 0.00)",
         "dead positions",
@@ -2097,6 +2097,7 @@ def build(
     r3_oracle_b: Path | None = None,
     r2_reruns: dict[str, Path] | None = None,
     artefact_runs: list[tuple[str, Path]] | None = None,
+    stopped_runs: list[tuple[str, Path]] | None = None,
 ) -> str:
     rows = rows or {}
     results: dict[str, dict] = {}
@@ -2324,6 +2325,7 @@ def build(
         return f"{short} round 2 {name}{tail}"
 
     artefact_entries = [(lbl, load_eval(p)) for lbl, p in (artefact_runs or [])]
+    stopped_entries = [(lbl, load_eval(p)) for lbl, p in (stopped_runs or [])]
 
     compare_entries = (
         [(r2_compare_label("lane A", "lane_a", ra), r2_cmp["lane_a"], oa)]
@@ -2675,6 +2677,11 @@ def build(
             else "_Not in this report: no `--artefact-run LABEL=<run folder>` was supplied._"
         ),
         "R3_ARTEFACT_VERDICT": validation_verdict(artefact_entries),
+        "R3_STOPPED_TABLE": (
+            artefact_table(stopped_entries, held_out_from)
+            if stopped_entries
+            else "_No row was stopped before its 200 rollouts._"
+        ),
         "R3_ROWS_DEAD_TABLE": (
             artefact_table(
                 r3_row_entries
@@ -2841,6 +2848,11 @@ def main(argv: list[str] | None = None) -> int:
              "comparison table; the original P10 row moves to the appendix",
     )
     ap.add_argument(
+        "--r3-stopped", action="append", default=[], metavar="LABEL=RUN",
+        help="a 200-rollout row that was stopped before finishing; repeatable. Reported in "
+             "its own table, never in the rows table, and never ranked",
+    )
+    ap.add_argument(
         "--artefact-run", action="append", default=[], metavar="LABEL=RUN",
         help="one run of the paired under-load test of `--fresh-first-obs`; repeatable. "
              "LABEL is free text (the table's row name)",
@@ -2874,15 +2886,20 @@ def main(argv: list[str] | None = None) -> int:
         if not (p / "out" / "eval" / "eval_results.csv").is_file():
             raise SystemExit(f"[aggregate] --r2-rerun {key}: {p} has no out/eval/eval_results.csv")
         r2_reruns[key] = p
-    artefact_runs: list[tuple[str, Path]] = []
-    for pair in args.artefact_run:
-        if "=" not in pair:
-            raise SystemExit(f"[aggregate] --artefact-run wants LABEL=RUN, got {pair!r}")
-        label, _sep, value = pair.partition("=")
-        p = Path(value.strip()).expanduser().resolve()
-        if not (p / "out" / "eval" / "eval_results.csv").is_file():
-            raise SystemExit(f"[aggregate] --artefact-run {label}: {p} has no out/eval/eval_results.csv")
-        artefact_runs.append((label.strip(), p))
+    def labelled(pairs: list[str], flag: str) -> list[tuple[str, Path]]:
+        out = []
+        for pair in pairs:
+            if "=" not in pair:
+                raise SystemExit(f"[aggregate] {flag} wants LABEL=RUN, got {pair!r}")
+            label, _sep, value = pair.partition("=")
+            p = Path(value.strip()).expanduser().resolve()
+            if not (p / "out" / "eval" / "eval_results.csv").is_file():
+                raise SystemExit(f"[aggregate] {flag} {label}: {p} has no out/eval/eval_results.csv")
+            out.append((label.strip(), p))
+        return out
+
+    artefact_runs = labelled(args.artefact_run, "--artefact-run")
+    stopped_runs = labelled(args.r3_stopped, "--r3-stopped")
     text = build(
         rows=rows,
         held_out_from=args.held_out_from,
@@ -2890,6 +2907,7 @@ def main(argv: list[str] | None = None) -> int:
         r3_oracle_b=r3_oracle_b,
         r2_reruns=r2_reruns,
         artefact_runs=artefact_runs,
+        stopped_runs=stopped_runs,
     )
     if args.stdout:
         sys.stdout.write(text)
