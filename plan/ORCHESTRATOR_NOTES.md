@@ -2,6 +2,69 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 05:40 UTC (2026-09-05, P9 -> attempt 2) — lane B is done and 13/20 at 17500. Start P10's lane-B rows early on the idle devices.
+
+**Read this first if you are attempt 2.** Nothing is broken. Three jobs are
+alive and **must not be restarted**: lane A fine-tune **pid 2311371**
+(`/tmp/franka-sonic/lane_a/2026-09-05_finetune`, at ~15 650/20 000, finishing
+~07:40), the screening watcher **pid 2404198**, and the round-3 generation's
+last worker. The RESUME POINTER v2 in STATUS is authoritative; the older one at
+`STATUS.md:800` names dead pids by design (a mid-run storage switch), not by
+failure. **The early stop stays OFF.** Both lanes run to `checkpoint-20000`;
+WP 9.3's rule only *selects*.
+
+**Where P9 stands.** Lane B has finished all 20 000 steps and its series is the
+result of the whole bake-off so far:
+
+| step | 2500 | 5000 | 7500 | 10000 | 12500 | 15000 | 17500 |
+|---|---|---|---|---|---|---|---|
+| lane B | 0/20 | 0/20 | 0/20 | 0/20 | 3/20 | 5/20 | **13/20 (progress 0.775, milestones 100/80/80/75/65/65)** |
+| lane A | 0/20 | 0/20 | 1/20 | 0/20 | 0/20 | screening | — |
+
+Lane B was still rising at 17 500, so screen `checkpoint-20000` as your first
+priority — it may well be the best checkpoint of either lane.
+
+### DO THIS with the idle devices (authorised, and it is not "starting the next phase")
+
+Lane B's trainer has exited and generation is done, so devices are free while
+lane A trains alone on 1,5 and screening uses one more. **Once B@20000 is
+screened** — and only then, so the pick stays pre-registered — launch lane B's
+**three top checkpoints at 200 rollouts plus the B-oracle row**, one device
+each, on the free devices:
+
+- These are P10 rows measured early, not a phase change: record them in STATUS
+  as such, with `--rollouts 200`, the same eval binding as every screen, and the
+  B-oracle through a **verified** export (`[check] VERDICT: OK`).
+- **Lane A's training and the screening watcher keep absolute priority** for
+  devices. Never take 1 or 5, and leave one device free for the watcher.
+- Do not start a row you cannot finish; each is ~4.2 h.
+
+The reason is load-smoothing, not wall-clock: with all eight rows starting at
+once after lane A finishes, eight concurrent Isaac processes would contend
+badly. Spreading four of them across the next two hours costs nothing and
+de-risks the rest.
+
+### When lane A reaches 20 000 (~07:40)
+Screen its remaining checkpoints, then write the two literal lines from
+`stopping_rule.py` and run the gate:
+
+```
+P9 BEST lane_a=<abs path>
+P9 BEST lane_b=<abs path>
+```
+
+Then P10 per my 03:40 note: **top three per lane at 200 rollouts**, headline
+only from the 200-rollout row of the pre-registered best-by-screen pick, every
+row reported on all 200 *and* on held-out episodes 20–199, and **the
+six-milestone vector leading each row rather than mean progress** — lane A's
+7500 screen is the standing proof that a falling mean can accompany a policy
+getting further.
+
+Round-3 data (`shared/2026-09-04_demos-2`, eval-matched spawns) is generated;
+its export → replay → `jointpos_screen` can proceed whenever it does not
+compete with the above. It feeds P11, which does not start until P10's gate
+passes.
+
 ## 03:40 UTC (2026-09-05, P9 -> P10) — the series oscillates; P10 evaluates the top THREE per lane, and the headline never comes from a screen
 
 Both lanes have now produced successes (A 1/20 at 7500, B **3/20** at 12500),
