@@ -940,6 +940,11 @@ def stage_eval(run: Run) -> int:
                   "--modality-config-path", str(_modality_config(run.lane)),
                   "--host", "127.0.0.1", "--port", str(port), "--replan-every", "20",
                   "--image-size", "640x360", "--device", "cuda", *extra]
+    # P11 (2026-09-05): pass a server RNG seed through, off by default so the binding of
+    # rounds 1-3 is unchanged. Two runs with the same --server-seed test whether the measured
+    # run-to-run spread (lane B checkpoint-10000: 16/20, 185/200, 7/20) is the unseeded sampler.
+    if getattr(run.args, "server_seed", None) is not None:
+        server_cmd += ["--seed", str(run.args.server_seed)]
     eval_cmd = _eval_cmd(run, eval_out, "ZmqAct",
                          ["--endpoint", f"tcp://127.0.0.1:{port}", "--grip-threshold", "0.5"])
     run.write_readme(
@@ -1610,6 +1615,9 @@ def main(argv=None) -> int:
     r.add_argument("--hours", type=float, default=1.5,
                    help="lane_b/sonic_rl: wall-clock cap; the trainer is stopped by PID after it")
     r.add_argument("--rollouts", type=int, default=20)
+    r.add_argument("--server-seed", type=int, default=None,
+                   help="eval: seed the policy server's RNGs with <seed> + episode index "
+                        "(off by default — rounds 1-3 ran unseeded and stay comparable)")
     r.add_argument("--sonic-overrides", default="",
                    help="lane_b sonic_rl/export_onnx/decoder_replay: extra Hydra overrides appended "
                         "to the gear_sonic command, e.g. '++manager_env.config.robot.type=dual_fr3_stiff'")
