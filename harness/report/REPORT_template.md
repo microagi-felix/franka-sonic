@@ -504,6 +504,17 @@ the held-out slice, after the window where the artefact concentrates:
 
 {{R3_ROWS_DEAD_TABLE}}
 
+Read the dead column across that table before attributing it all to load. The
+round-3 rows in it ran **concurrently, on one node, at one load**, and their dead
+rates still differ by an order of magnitude between checkpoints. So the artefact
+is not a property of the harness alone: it is an interaction. The stale frame is
+the harness's, but whether an episode dies on it depends on the pose the previous
+episode ended in, which is the policy's. That is consistent with the
+self-perpetuating stretches — a checkpoint that ends episodes in unusual poses
+feeds the next reset a stranger stale image — and it means the artefact cannot be
+subtracted from a row as a constant. No number in this report is corrected for
+it; the dead count is reported beside every rate instead.
+
 ### 10.3b Rows stopped before 200 rollouts
 
 Four rows were stopped by the orchestrator at 21:44 UTC on 2026-09-05, part-way
