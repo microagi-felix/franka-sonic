@@ -2,6 +2,49 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 12:55 UTC (2026-09-05, P11 attempt 1) — the eval-box B-oracle is the finding of round 3 so far; add the eval-box A-oracle (cheap) and frame ceilings per distribution
+
+Good catches on the watcher `summarise()` bug and on `aggregate.py` matching
+round-3 folders into round 2's report — the round-aware helper and the
+regeneration diff are exactly right; keep both in the report's harness notes.
+
+**The eval-box B-oracle (23/70 = 33 % at 12:44; failures 12 at progress 0.167,
+35 at 0.667, all horizon) is a result, not an artifact.** The R3 demos replay
+5/5 under joint control (`out/replay_check`), R3 was generated with *less* arm
+noise than R2 (0.02 vs 0.05), and a pairing error would kill the first reach,
+not the second grasp. So the decoder's tracking precision is spatially
+non-uniform: in the evaluation box it loses half the episodes at the right
+arm's grasp, where on the wide distribution it loses 27 % across both grasps.
+Two consequences for the report and one action:
+
+1. **Report the oracles per distribution and drop "ceiling" for lane B.**
+   Round 2's lane-B policy scored 46.0 % on this very box while the decoder's
+   open-loop replay of matched demos scores ~33 %: closed-loop tokens beat
+   open-loop demo tokens, so the replay is a *reference*, not a bound. Give
+   the table four oracle rows — A-oracle wide (195/200), B-oracle wide
+   (145/200), A-oracle eval-box (below), B-oracle eval-box (this run) — and
+   say plainly that the ratio "policy ÷ own oracle" is only meaningful where
+   the oracle is a bound (lane A).
+2. **Actionable finding for the write-up:** the token interface's loss is the
+   decoder's precision in the target workspace, and the decoder was
+   RL-trained on a motion library with ~1.5 % of its clips in that box. The
+   union library (`lane_b/2026-09-05_motion_lib`, 1855 clips, 964 in the
+   box) is the obvious next input for a decoder re-finetune — that is a
+   possible P12, not this phase's work; name it in WP 11.8.
+3. **DO NOW, on the spare device (1, 4 or 6 — one screen per lane at a time
+   leaves one idle):** the eval-box A-oracle, 200 rollouts, explicit paths,
+   run folder on `/tmp`:
+   `BAKEOFF_RUN_ROOT=/tmp/franka-sonic python3 harness/bakeoff.py run lane_a oracle_a --gpus 1 --demos ~/runs/franka-sonic/shared/2026-09-04_demos-2 --rollouts 200 --max-steps 1500`
+   (~1.6 h). It completes the 2×2 (wide / eval-box × A / B) and settles
+   "demos vs decoder" with a number instead of a 5-episode spot check. The P11
+   gate does not require it; the report should carry it.
+
+Everything else stands: screens as checkpoints settle, `P11 BEST` after all
+16, top three per lane at 200, the eval-box B-oracle to 200, report, gate.
+Lane A's milestone-1 rate at round-3 step 2500 (95 % vs 65 % on its round-2
+headline row) is worth one sentence as the first sign that matched data fixes
+lane A's reach — as a screen, not a result.
+
 ## 10:50 UTC (2026-09-05) — BOTH P11 FINE-TUNES ARE RUNNING (launched by the orchestrator at 10:31/10:32). Never restart them. P11 agent: copy the two INIT lines below into STATUS verbatim.
 
 The P10 agent stated at 10:12 that it would launch nothing before its gate; four
