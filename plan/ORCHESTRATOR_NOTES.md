@@ -2,6 +2,59 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 00:15 UTC (2026-09-05, P9) — URGENT: home is draining from outside. Move both fine-tunes to /tmp at their next checkpoint boundary.
+
+**Measured, not projected.** Home free: 2495 GB at 21:40, 2472 at 22:06, 1859 at
+00:07, **1848 at 00:09** — 11 GB in 40 s. Our own writes over 22:06→00:07 were
+three checkpoints (~102 GB), so roughly **255–900 GB/h is being consumed by
+other users** of the shared `/research` Lustre volume (71 TB, 98 % full). We
+still need ~440 GB for the remaining 13 checkpoints. At the low end of that
+drain we cross the 600 GB floor around 03:20 UTC; at the high end, before 02:00.
+Both are before lane B finishes (~05:50) and long before lane A (~07:55).
+
+`/tmp` (instance-local `/dev/md0`) has **10.7 TB free**. That is the answer.
+
+### DO THIS — a clean switch, not a crash
+
+`resume_from_checkpoint` is supported end to end (`gr00t/experiment/experiment.py:344`,
+`launch_finetune.py:127`), so HF Trainer restores optimizer, LR-scheduler state
+and step count: a stop-and-resume is a **faithful continuation of the same run**,
+not a schedule restart, and does not confound the comparison.
+
+1. **Mirror what exists now.** Copy (never move, never delete) every existing
+   `checkpoint-*` to `/tmp/franka-sonic/p9/ckpt_mirror/<lane>/`, and each new one
+   as it lands. ~102 GB today, minutes on local disk. This alone makes an ENOSPC
+   death recoverable instead of fatal — do it first, before anything else.
+2. **Switch each lane at its next checkpoint boundary** — lane A at
+   `checkpoint-5000` (~00:25), lane B at `checkpoint-7500` (~00:53). At the
+   boundary: SIGTERM the recorded pgid, SIGKILL the python by pid, verify with
+   `ps`, then relaunch the *same command* with `--output-dir` under
+   `/tmp/franka-sonic/<lane>/` and `resume_from_checkpoint` pointing at that
+   checkpoint. Waiting for the boundary costs ~0 work; stopping mid-interval
+   throws away up to 70 min, so do not stop early.
+3. **Verify the resume took**: the trainer must log the resumed global step
+   (5000 / 7500), not 0, and the first logged LR must match the cosine schedule
+   at that step (~9.85e-5 was step 2500's value; it decreases). If it restarts
+   at step 0, kill it, say so in STATUS, and fall back to letting the home-side
+   run continue while you mirror aggressively.
+4. **Sample `df -BG ~` every 5 min** into `/tmp/franka-sonic/p9/df.log` with a
+   timestamp, so the drain rate is a measured series in the report rather than
+   my two-point estimate.
+5. **Nothing on home is deleted or moved** — the existing run folders stay
+   exactly where they are, marked in STATUS as the pre-switch half of each run.
+   At the end of the phase, copy the winning checkpoints back to
+   `~/runs/franka-sonic/<lane>/final/p9/` if home allows, else `NEEDS-COPY`.
+6. Point the round-3 generation's remaining stages at `/tmp/franka-sonic` too.
+   It is small (~10 GB) but there is no reason to spend home on it now.
+
+**Both lanes switch, or neither** — never one lane on home and one on /tmp, the
+same rule that governed the launch. Record the switch step per lane in STATUS;
+the P10 report must state that each lane trained across two run folders and that
+the resume restored optimizer and scheduler state.
+
+If the drain stops on its own, still finish the switch once started — a
+half-switched pair is worse than either end state.
+
 ## 00:05 UTC (2026-09-05, P9 + round-3 prep) — the failure is reach-then-stall, and the spawn box is 1.5 % of the training volume. Start the targeted generation now.
 
 **What both lanes actually do at checkpoint-2500** (I read the videos and the
