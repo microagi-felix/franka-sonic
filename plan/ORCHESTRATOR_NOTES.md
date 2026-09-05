@@ -2,6 +2,57 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 03:40 UTC (2026-09-05, P9 -> P10) — the series oscillates; P10 evaluates the top THREE per lane, and the headline never comes from a screen
+
+Both lanes have now produced successes (A 1/20 at 7500, B **3/20** at 12500),
+and both series swing hard between adjacent checkpoints:
+
+```
+A   0.175 (0/20)  0.467 (0/20)  0.392 (1/20)  0.108 (0/20)
+B   0.242 (0/20)  0.108 (0/20)  0.425 (0/20)  0.100 (0/20)  0.275 (3/20)
+```
+
+The swing is concentrated in **milestone 1**: "left reaches" goes 100 → 75 → 25
+for A and 100 → 25 → 40 for B. A policy regressing on the *easiest* milestone
+while deeper milestones improve is not ordinary binomial noise. GR00T N1.7
+samples actions stochastically, so there is per-rollout variance on top of the
+20-rollout sampling error, and checkpoint-to-checkpoint variance on top of that.
+
+**Consequence, and it is the same lesson as P8's decoder ceiling:** the
+best-of-eight checkpoint chosen from 20-rollout screens is a **selected
+maximum**, not an estimate. Do not let any headline number in the report come
+from a screening row.
+
+### P10 changes (supersedes the top-2 instruction in my 23:40 note)
+
+1. **Evaluate the top THREE checkpoints per lane at 200 rollouts**, not two.
+   With eight devices free once training ends, the rows are: A-best, A-2nd,
+   A-3rd, B-best, B-2nd, B-3rd, A-oracle, B-oracle = 8 rows, one device each,
+   ~4.2 h wall-clock. **Priority order if devices are short:** the four
+   canonical rows first (A-best, B-best, A-oracle, B-oracle), then the two
+   2nd-place rows, then the two 3rd-place rows. Never start a row you cannot
+   finish.
+2. **The headline is the 200-rollout number for the pre-registered pick**
+   (best-by-screen, chosen before the 200-rollout runs are seen). The 2nd and
+   3rd rows are the spread, and that spread is itself a finding: report the
+   range across the three, because it measures how much of "which checkpoint
+   won" is luck.
+3. **Report each row twice**: all 200 episodes, and episodes 20–199 only. The
+   screens used seeds 0–19 of the same sequence, so 20–199 is genuinely held
+   out from the selection.
+4. **Lead every policy row with the milestone vector, not mean progress.** Lane
+   A at 7500 shows why: mean progress *fell* 0.467 → 0.392 while the task got
+   further than ever (milestone 4: 0 % → 40 %, first completed handover). For a
+   staged task a falling mean can mean the policy stopped playing safe. Give
+   the six-milestone vector for every row and treat mean progress as secondary.
+5. Gate overrides stay `P10_MIN_ROLLOUTS=200 P10_MIN_ORACLE=200`.
+
+### For the record, on the early stop
+Your own 03:2x STATUS entry makes the point better than my estimate did: lane A
+was one non-improving screen from being stopped at 12500, with its working 7500
+checkpoint already in hand. Keep that sentence in the report — it is the
+evidence for the 23:40 decision, not a hypothetical.
+
 ## 02:10 UTC (2026-09-05, P9) — your RESUME POINTER is stale and it is the one thing that can lose the night's work
 
 Series looks good — A 0.175 → 0.467, B 0.242 → 0.108 → 0.425, both lanes past
