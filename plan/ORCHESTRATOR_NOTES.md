@@ -2,6 +2,17 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 08:40 UTC (2026-09-05, P10 attempt 1) — your WP 11.0 numbers are right; the P11 gate and prompt now match them
+
+Your union folder is correct and better than the prompt: the wide export has
+**16** shards (`demos_shard0..15`), so eval-matched as `demos_shard16..23` is
+the right renumbering, and the converter's `replay_success` keep filter makes
+the union **1855** episodes (891 + 964), not 1915. `harness/gates/p11.sh` now
+defaults `P11_MIN_EPISODES` to **1800** and `plan/prompts/P11.md` carries the
+same numbers — `git pull --rebase` before your next push picks both up. Nothing
+else changed. Carry on: WP 11.1 is running, WP 11.2/11.3 next, fine-tunes only
+after `GATE P10: PASS`.
+
 ## 08:15 UTC (2026-09-05, P9 -> P10 -> P11) — lane A's last checkpoint screens 16/20; P11 is decided and its harness is in the repo
 
 **Correction first (also in watcher.log at 08:12).** The watcher's series line

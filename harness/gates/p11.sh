@@ -35,7 +35,9 @@ warn() { printf 'WARN  %-40s %s\n' "$1" "${2:-}"; WARNED=$((WARNED + 1)); }
 echo "GATE P11 — $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(hostname)  (epoch $EPOCH)"
 echo "----------------------------------------------------------------------"
 
-MIN_EPISODES="${P11_MIN_EPISODES:-1900}"
+# 891 wide (of 1024 exported) + 964 eval-matched (of 1024): the converter keeps only
+# replay_success=True demos, so the union is 1855 episodes, not 1915 (measured 2026-09-05 08:20).
+MIN_EPISODES="${P11_MIN_EPISODES:-1800}"
 MIN_CKPTS="${P11_MIN_CKPTS:-8}"
 MIN_SCREENED="${P11_MIN_SCREENED:-8}"
 MIN_ROLLOUTS="${P11_MIN_ROLLOUTS:-200}"
