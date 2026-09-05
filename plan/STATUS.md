@@ -1295,3 +1295,4 @@ P11 BEST lane_a=/tmp/franka-sonic/lane_a/2026-09-05_finetune-2/out/checkpoints/c
 - 2026-09-05 20:18  bakeoff lane_b/finetune OK  rc=0  gpus=3,7  run=/tmp/franka-sonic/lane_b/2026-09-05_finetune-2
 - 2026-09-05 20:38  bakeoff lane_b/eval OK  rc=0  gpus=5  run=/tmp/franka-sonic/lane_b/2026-09-05_eval-23
 - 2026-09-05 21:05  DRIVER: resume — attempts 2 and 3 died in seconds on the account usage limit ("You've hit your session limit · resets 9pm (UTC)"), not on the work; limit reset at 21:00; restarted by the orchestrator (see the 21:05 orchestrator note: rows launched unfixed + seeded, fresh-first-obs patch not to be used)
+- 2026-09-05 21:09  DRIVER: start (pid 696772, model claude-opus-5, effort max, logs /tmp/franka-sonic/driver/2026-09-05)
