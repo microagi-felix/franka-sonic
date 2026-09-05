@@ -451,23 +451,75 @@ each row and exact Clopper–Pearson 95 % intervals:
 
 {{R3_ROWS_TABLE}}
 
+{{R3_SEED_SENTENCE}}
+
 Held out from the selection: the 20-rollout screens used seeds 0–19 of the same
 sequence, so episodes {{HELDOUT_FROM}}–199 are genuinely held out from the
 checkpoint choice.
 
 {{R3_ROWS_TABLE_HELDOUT}}
 
+### 10.3a The dead-episode artefact, and why every row carries its own evidence
+
+These rows were measured with a known, **unfixed** harness artefact active, and
+that is stated here rather than in a footnote because it changes how the numbers
+below must be read.
+
+**What it is.** In some rollouts the arm never reaches the block at all: the
+rubric's progress stays at exactly 0.00 for the whole 1500-step horizon. Such
+episodes come in *stretches* — a run "catches" it, stays dead for several
+episodes, and then cures after a benign one. They occur only in policy runs and
+in **none** of the four oracle rows (0 of 800 oracle episodes), and the oracles
+are the runs that never look at an image. Episode 0 is almost never dead.
+
+**What causes it, as far as this campaign established.** Two candidates were
+tested and one survived. *The action sampler* was ruled out: seeding the policy
+server's `random`/`numpy`/`torch` streams per episode did not make two runs of
+one checkpoint agree (18/20 vs 19/20, 1 of 20 episode lengths equal), and
+unseeded controls run at the same quiet moment scored just as high as the seeded
+pair. *Node load* survived: every run with dead stretches ran while two trainers
+plus four to six evaluations shared the pod, and every run after lane A's
+trainer exited at 18:41 was clean. That is the signature of a **render race at
+episode reset** — `evaluation/eval.py` does `env.reset()` → `sync_wrist_cam_fabric`
+→ `client.reset()` → `capture()`, and Isaac Lab's `num_rerenders_on_reset = 0`
+leaves that first capture free to return the *previous* episode's frame under
+load. The policy then plans its first 40-step chunk from a stale image, which is
+the violent first chunk visible in the recorded frames at 0.16 s, and the arm
+ends the episode in a pose that makes the next reset's stale image stranger
+still.
+
+**The fix was written, tested under load, and rejected — by its own data.** A
+`--fresh-first-obs` flag (force a render plus `sensor.update(0.0,
+force_recompute=True)` before the first capture) was validated as three runs
+with the flag against three without, launched together on six devices at the
+same load, same checkpoint, same seed:
+
+{{R3_ARTEFACT_TABLE}}
+
+{{R3_ARTEFACT_VERDICT}}
+
+**So every row below carries its own artefact evidence** — the dead count, where
+the dead episodes sit, and the whole outcome string — and the verdict is read on
+the held-out slice, after the window where the artefact concentrates:
+
+{{R3_ROWS_DEAD_TABLE}}
+
 ### 10.4 Round 2 against round 3, per lane
 
 Two numbers per row: the absolute success rate, which is what the stack delivers,
-and the rate divided by **that lane's own oracle ceiling**, which is how much of
-the headroom its own interface leaves it took. Neither replaces the other.
+and the rate divided by **that lane's own oracle row on the same spawns**, which
+is how much of the headroom its own interface leaves it took — for as long as the
+oracle is above the policy. Neither number replaces the other, and where the
+oracle is *not* above the policy the caption below says so and the word *ceiling*
+is dropped.
 
 {{R3_COMPARE_TABLE}}
 
 {{R3_COMPARE_CAPTION}}
 
-### 10.5 The two lane-B ceilings
+{{R3_VERDICT}}
+
+### 10.5 The two lane-B oracle rows
 
 {{R3_CEILINGS}}
 
@@ -559,6 +611,27 @@ Lane B — {{R3_GPU_TOTAL_B}} GPU-h so far:
    for round 2, an absolute path to a local `checkpoint-N` for round 3) and takes
    every round-3 row as an explicit `--r3-row` path. Nothing in section 10 is
    resolved by recency.
+8. **The dead-episode artefact was never fixed, only characterised** (10.3a).
+   Every screen in 10.2 and every row in 10.3 was measured with it active, to a
+   degree that depended on what else was running on the node at the time, and the
+   candidate fix was rejected on its own evidence. Round 3's rows were all
+   launched together on eight devices, so they at least share one load profile
+   with each other — which round 2's original rows do not share with them, and
+   which is why round 2's headline checkpoints were re-measured alongside them.
+   The selections in 10.2 were made under the artefact and no re-screen was run:
+   lane A's 0/20 at `checkpoint-12500` (19 of 20 episodes dead) is the clearest
+   single casualty, and the pre-registered rule was applied to the screens as
+   they came out rather than to a cleaned-up version of them.
+
+## 10.10 Appendix — the superseded round-2 rows
+
+Round 2's headline checkpoints were re-measured under round 3's evaluation so
+that the comparison in 10.4 runs on one binding under one node load. The original
+P10 rows are not withdrawn and are not corrections of each other; they are the
+same weights measured on a busier node, and the difference between the two
+readings is itself the size of the artefact at that load:
+
+{{R3_APPENDIX_R2}}
 
 ## 11. Round 1 (P0–P6) — kept for the record
 

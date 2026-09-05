@@ -1050,6 +1050,199 @@ def mvec(r: dict) -> str:
     return " / ".join(f"{100 * x:.0f}" for x in r["milestone_rates"])
 
 
+# A rollout whose progress never leaves 0.00 is one where the arm never reached
+# the block at all -- the signature of the stale-first-observation artefact
+# (section 10.3a). It is scored separately from an ordinary failure because the
+# two have different causes and only one of them is the policy's.
+DEAD_PROGRESS = 1e-9
+
+
+def ep_marks(r: dict, width: int | None = None) -> str:
+    """Per-episode outcome string in evaluation order.
+
+    `1` success, `z` progress 0.00 (the arm never reaches — the artefact's
+    signature), `0` any other failure. `width` truncates and marks the cut."""
+    marks = [
+        "1" if e["success"] else ("z" if e["progress"] <= DEAD_PROGRESS else "0")
+        for e in sorted(r["episodes"], key=lambda e: e["episode"])
+    ]
+    if width is not None and len(marks) > width:
+        return "".join(marks[:width]) + f"… (+{len(marks) - width})"
+    return "".join(marks)
+
+
+def dead_indices(r: dict) -> list[int]:
+    return [
+        e["episode"]
+        for e in sorted(r["episodes"], key=lambda e: e["episode"])
+        if not e["success"] and e["progress"] <= DEAD_PROGRESS
+    ]
+
+
+def ranges_text(idx: list[int]) -> str:
+    """[1,2,3,5,9,10] -> '1–3, 5, 9–10'. Empty -> 'none'."""
+    if not idx:
+        return "none"
+    out, start, prev = [], idx[0], idx[0]
+    for k in idx[1:] + [None]:
+        if k == prev + 1:
+            prev = k
+            continue
+        out.append(str(start) if start == prev else f"{start}–{prev}")
+        if k is None:
+            break
+        start = prev = k
+    return ", ".join(out)
+
+
+def artefact_table(entries: list[tuple[str, dict]], held_out_from: int = 20) -> str:
+    """Every row with its dead-episode count and positions and its outcome string.
+
+    The 21:05 reporting rule: the artefact was not fixed before these rows ran,
+    so each row carries the evidence needed to judge how much of it it caught."""
+    header = [
+        "row",
+        "all 200",
+        f"held out {held_out_from}–199",
+        "dead (progress 0.00)",
+        "dead positions",
+        "outcome string (1 success / z dead / 0 other failure)",
+    ]
+    rows = []
+    for label, r in entries:
+        dead = dead_indices(r)
+        held = restrict(r, held_out_from)
+        rows.append(
+            [
+                label,
+                f"{r['n_success']}/{r['n']} ({100 * r['success_rate']:.1f} %)",
+                (f"{held['n_success']}/{held['n']} ({100 * held['success_rate']:.1f} %)"
+                 if held["n"] else "n/a"),
+                f"**{len(dead)}**" if dead else "0",
+                ranges_text(dead),
+                f"`{ep_marks(r, 60)}`",
+            ]
+        )
+    return md_table(header, rows)
+
+
+def validation_table(entries: list[tuple[str, dict]]) -> str:
+    """The paired under-load test of the candidate fix, one run per line."""
+    header = [
+        "run",
+        "`--fresh-first-obs`",
+        "server seed",
+        "successes",
+        "dead",
+        "outcome string",
+        "run folder",
+    ]
+    rows = []
+    for label, r in entries:
+        cmd = (r["dir"] / "cmd.sh").read_text() if (r["dir"] / "cmd.sh").is_file() else ""
+        seed = re.search(r"--seed (\d+)", cmd)
+        rows.append(
+            [
+                label,
+                "**yes**" if "--fresh-first-obs" in cmd else "no",
+                seed.group(1) if seed else NOT_RECORDED,
+                f"**{count_text(r)}**",
+                str(len(dead_indices(r))),
+                f"`{ep_marks(r, 40)}`",
+                f"`{short_path(r['dir'])}`",
+            ]
+        )
+    return md_table(header, rows)
+
+
+def validation_verdict(entries: list[tuple[str, dict]]) -> str:
+    """Read the paired test rather than assert it: the flag passes only if every
+    run carrying it is free of dead episodes and at least one run without it is
+    not. Computed from the runs, so it stays honest if they are re-run."""
+    fixed, plain = [], []
+    for _label, r in entries:
+        cmd = (r["dir"] / "cmd.sh").read_text() if (r["dir"] / "cmd.sh").is_file() else ""
+        (fixed if "--fresh-first-obs" in cmd else plain).append(r)
+    if not fixed or not plain:
+        return (
+            "_The paired test is not in this report: it needs at least one run with the "
+            "flag and one without (`--artefact-run LABEL=<run folder>`)._"
+        )
+
+    def summary(rs: list[dict]) -> str:
+        return ", ".join(f"{count_text(r)} ({len(dead_indices(r))} dead)" for r in rs)
+
+    fdead = sum(len(dead_indices(r)) for r in fixed)
+    pdead = sum(len(dead_indices(r)) for r in plain)
+    fsucc = sum(r["n_success"] for r in fixed) / max(sum(r["n"] for r in fixed), 1)
+    psucc = sum(r["n_success"] for r in plain) / max(sum(r["n"] for r in plain), 1)
+    verdict = (
+        f"**With the flag: {summary(fixed)}. Without it: {summary(plain)}.** "
+        f"Pooled, the flag scores {100 * fsucc:.0f} % against {100 * psucc:.0f} % without it"
+    )
+    if fsucc < psucc:
+        return (
+            verdict + " — the flag makes the policy **worse**, decisively and reproducibly, "
+            "so it was not used on any row. "
+            + (
+                "It does not even buy the thing it was written for: the runs carrying it still "
+                f"show {fdead} dead episode(s), against {pdead} without it. "
+                if fdead
+                else f"On the dead episodes themselves the arm carrying it shows {fdead} and the "
+                f"arm without it {pdead}, over {len(fixed)} runs each — too few dead episodes "
+                "either way to call that a demonstration, and beside the point next to a "
+                f"{100 * (psucc - fsucc):.0f}-point drop in success. "
+            )
+            + "The mechanism it targets is real — Isaac Lab's `num_rerenders_on_reset = 0` "
+            "leaves the first post-reset capture one render behind — but the implementation "
+            "changes more than the first frame: two extra `sim.render()` calls plus "
+            "`sensor.update(0.0, force_recompute=True)` most plausibly offset the annotator "
+            "buffers for the whole episode, so every later capture is a frame further behind. "
+            "The patch is kept as a harness debt with this evidence, not as a fix."
+        )
+    if fdead == 0:
+        return verdict + " and shows no dead episode, so the flag does what it was written to do."
+    return verdict + f", but {fdead} dead episode(s) survive it, so it is not a fix."
+
+
+def seed_sentence(rows: list[dict]) -> str:
+    """Which server seed the rows carry, read from their own cmd.sh.
+
+    A seed here re-seeds `random`, `numpy` and `torch` with `N + episode index`
+    at every episode reset, so all rows draw the same noise on the same episode:
+    a paired design across checkpoints. It is not reproducibility — two runs of
+    one checkpoint at one seed were measured at 18/20 and 19/20 with only 1 of 20
+    episode lengths equal."""
+    seeds = set()
+    for r in rows:
+        cmd = (r["dir"] / "cmd.sh").read_text() if (r["dir"] / "cmd.sh").is_file() else ""
+        m = re.search(r"--seed (\d+)", cmd)
+        seeds.add(m.group(1) if m else None)
+    named = sorted(s for s in seeds if s)
+    if not named:
+        return (
+            "None of these rows carries a server seed, so each is one unrecorded draw from "
+            "the policy server's own noise stream."
+        )
+    if None in seeds:
+        return (
+            f"Server seed {', '.join('`' + s + '`' for s in named)} on the seeded rows, "
+            "**and at least one row in this table is unseeded** — those two are not paired "
+            "and the comparison between them carries the sampler's spread on top of "
+            "everything else."
+        )
+    if len(named) == 1:
+        return (
+            f"Every row here carries `--seed {named[0]}` on its policy server: `random`, "
+            "`numpy` and `torch` are re-seeded with `seed + episode index` at every reset, so "
+            "episode *k* draws the same noise in every row — a paired design across "
+            "checkpoints. It is **not** reproducibility: two runs of one checkpoint at one "
+            "seed scored 18/20 and 19/20 and agreed on only 1 of 20 episode lengths, so the "
+            "inference and simulation path is nondeterministic below the sampler."
+        )
+    return f"The rows carry different server seeds ({', '.join(named)}), so they are not paired."
+
+
 def row_table(entries: list[tuple[str, dict]]) -> str:
     header = [
         "row",
@@ -1090,19 +1283,25 @@ def ceiling_table(entries: list[tuple[str, dict, dict | None]]) -> str:
     """Two numbers per policy row: absolute success, and success divided by its
     own lane's oracle ceiling. A lane's oracle bounds its interface, not its
     policy, so the ratio says how much of the reachable headroom the VLA took."""
-    header = ["row", "absolute", "own oracle ceiling", "÷ ceiling"]
+    header = ["row", "absolute", "own oracle", "÷ oracle"]
     rows = []
     for label, r, ceil in entries:
         if ceil is None:
             rows.append([label, f"{100 * r['success_rate']:.1f} %", "—", "—"])
             continue
         ratio = (r["success_rate"] / ceil["success_rate"]) if ceil["success_rate"] else None
+        cell = "n/a" if ratio is None else f"**{100 * ratio:.0f} %**"
+        # An oracle bounds a lane only while it is above it. When a policy row beats
+        # its own oracle the ratio is still the same arithmetic, but it stops being
+        # "fraction of the headroom taken" and saying so is not optional.
+        if ratio is not None and ratio > 1.0:
+            cell += " — **above its own oracle; not a ceiling**"
         rows.append(
             [
                 label,
                 f"{r['n_success']}/{r['n']} = {100 * r['success_rate']:.1f} %",
                 f"{ceil['n_success']}/{ceil['n']} = {100 * ceil['success_rate']:.1f} %",
-                "n/a" if ratio is None else f"**{100 * ratio:.0f} %**",
+                cell,
             ]
         )
     return md_table(header, rows)
@@ -1306,6 +1505,35 @@ def recipe_table(entries: list[tuple[str, dict]]) -> str:
     return md_table(["", *labels], rows)
 
 
+def above_oracle_note(entries: list[tuple[str, dict, dict | None]]) -> str:
+    """Say it plainly when a row beats the oracle it is divided by.
+
+    An oracle row bounds the *interface*, and only while it is above the policy.
+    The round-3 eval-box B-oracle replays the eval-matched demos' own recorded
+    tokens; if a policy trained on those demos scores higher, the oracle is
+    measuring how faithfully the decoder tracks a recorded token stream, not a
+    limit on what the lane can reach."""
+    over = [
+        (label, r, ceil)
+        for label, r, ceil in entries
+        if ceil is not None and ceil["success_rate"] and r["success_rate"] > ceil["success_rate"]
+    ]
+    if not over:
+        return ""
+    names = ", ".join(label for label, _r, _c in over)
+    return (
+        f" **{len(over)} row(s) in this table score above the oracle they are divided by "
+        f"({names}), so for those rows the word *ceiling* does not apply and is not used.** "
+        "An oracle bounds a lane only while it sits above it. The eval-box B-oracle replays "
+        "the eval-matched demos' **own recorded tokens** through the decoder, so what it "
+        "measures is how faithfully the decoder tracks a recorded token stream on those "
+        "spawns — a policy trained on those same demos is free to emit tokens the decoder "
+        "tracks better than the recorded ones, and evidently does. The ratio is still printed "
+        "because it is the same arithmetic in every row of the table, but for those rows it "
+        "must not be read as *fraction of the available headroom taken*."
+    )
+
+
 def compare_caption(ceil_a: dict, ceil_b2: dict, ceil_b3: dict | None) -> str:
     """Which ceiling each ratio is against, in the table's own numbers — the two
     lane-B ceilings are measured on different spawn distributions and swapping
@@ -1322,7 +1550,7 @@ def compare_caption(ceil_a: dict, ceil_b2: dict, ceil_b3: dict | None) -> str:
     return (
         f"Lane A is divided by the A-oracle in both rounds ({count_text(ceil_a)} = "
         f"{100 * ceil_a['success_rate']:.1f} %; the A-oracle replays recorded joint "
-        "labels and does not change between rounds). Lane B has two ceilings and they "
+        "labels and does not change between rounds). Lane B has two oracle rows and they "
         f"are not interchangeable: round 2's ratio is against the wide-box B-oracle "
         f"{count_text(ceil_b2)} = {100 * ceil_b2['success_rate']:.1f} %, measured on the "
         f"round-2 demo spawns, and round 3's is against {b3}."
@@ -1382,6 +1610,65 @@ def ranking_sentence(ra: dict, rb: dict, r3a: dict | None, r3b: dict | None) -> 
         else "; see each round's interval statement above for whether it separates them."
     )
     return f"{r2} {r3} {verdict}{close}"
+
+
+def r3_verdict(
+    lanes: list[tuple[str, dict | None, dict | None]],
+    held_out_from: int = 20,
+    reran: bool = False,
+) -> str:
+    """The round-2 vs round-3 verdict, per lane, stated on the held-out slice.
+
+    The 21:05 rule: the dead-episode artefact concentrates in a run's first
+    episodes, so the sentence that decides the round is the one over episodes
+    `held_out_from`-199, with the all-200 rate shown next to it rather than
+    hidden. Both numbers come out of the same csv; neither is a correction of
+    the other."""
+    bits = []
+    for short, r2, r3 in lanes:
+        if r3 is None or r2 is None:
+            bits.append(
+                f"**{short}** — not answerable yet: "
+                + ("its round-3 row " if r3 is None else "its round-2 row ")
+                + "has not been passed to this report."
+            )
+            continue
+        h2, h3 = restrict(r2, held_out_from), restrict(r3, held_out_from)
+        delta = 100 * (h3["success_rate"] - h2["success_rate"])
+        word = "gains" if delta > 0 else ("loses" if delta < 0 else "is unchanged by")
+        sep = "do not overlap" if not overlap(h2["ci95"], h3["ci95"]) else "overlap"
+        bits.append(
+            f"**{short}** {word} {abs(delta):.1f} points from the warm restart: round 3 "
+            f"{count_text(h3)} = {100 * h3['success_rate']:.1f} % ({ci_text(h3)}) against "
+            f"round 2 {count_text(h2)} = {100 * h2['success_rate']:.1f} % ({ci_text(h2)}) on "
+            f"episodes {held_out_from}–199, and the exact intervals **{sep}**. Over all 200 "
+            f"episodes the same two rows are {count_text(r3)} = "
+            f"{100 * r3['success_rate']:.1f} % and {count_text(r2)} = "
+            f"{100 * r2['success_rate']:.1f} %."
+        )
+    lead = (
+        "Round 2's side of each comparison is its headline checkpoint **re-measured** under "
+        "this round's evaluation (same seeded server, same load, same day), not its original "
+        f"P10 row — see {'the appendix' if reran else 'section 10.4'} for the originals. "
+        if reran
+        else "Round 2's side of each comparison is its original P10 row; the two rounds were "
+        "therefore measured under different node load, which section 10.3a shows is not a "
+        "neutral difference. "
+    )
+    return (
+        lead
+        + f"The verdict is read on episodes {held_out_from}–199, the slice held out from the "
+        "checkpoint choice **and** the slice after the window where the artefact "
+        "concentrates; the all-200 rate follows it in every case. "
+        + " ".join(bits)
+    )
+
+
+def appendix_rows_table(entries: list[tuple[str, dict]], held_out_from: int = 20) -> str:
+    """The original, unseeded round-2 rows, kept whole rather than replaced."""
+    if not entries:
+        return "_No superseded row: no `--r2-rerun` was supplied, so section 10.4 uses the original round-2 rows._"
+    return artefact_table(entries, held_out_from)
 
 
 def ceiling_paragraph(ob2: dict, ob3: dict | None, oa: dict) -> str:
@@ -1808,6 +2095,8 @@ def build(
     held_out_from: int = 20,
     r3_rows: dict[str, list[Path]] | None = None,
     r3_oracle_b: Path | None = None,
+    r2_reruns: dict[str, Path] | None = None,
+    artefact_runs: list[tuple[str, Path]] | None = None,
 ) -> str:
     rows = rows or {}
     results: dict[str, dict] = {}
@@ -1995,8 +2284,14 @@ def build(
     r3_entries: dict[str, list[tuple[str, dict]]] = {}
     for lane, short in (("lane_a", "lane A"), ("lane_b", "lane B")):
         ents = []
+        # One checkpoint can legitimately have two rows (the same weights measured
+        # twice), so a label that is only the step would collide. Disambiguate with
+        # the run folder rather than dropping either row.
+        steps = collections.Counter(r["step"] for r in r3_lane_rows[lane])
         for i, r in enumerate(r3_lane_rows[lane]):
             name = f"`checkpoint-{r['step']}`" if r["step"] else f"`{r['dir'].name}`"
+            if r["step"] and steps[r["step"]] > 1:
+                name += f" (`{r['dir'].name}`)"
             ents.append((f"{short} round 3 {name}" + (" — **headline**" if i == 0 else ""), r))
         r3_entries[lane] = ents
     r3a = r3_entries["lane_a"][0][1] if r3_entries["lane_a"] else None
@@ -2005,6 +2300,37 @@ def build(
     def r3_compare_label(short: str, r: dict) -> str:
         name = f"`checkpoint-{r['step']}`" if r["step"] else f"`{r['dir'].name}`"
         return f"{short} round 3 {name} — union data"
+
+    # Round 2's headline checkpoints, re-measured under round 3's evaluation so the
+    # two rounds are compared on one binding under one node load. The originals are
+    # not replaced; they move to the appendix (10.10).
+    r2_reruns = r2_reruns or {}
+    r2_rerun_rows = {k: load_eval(p) for k, p in r2_reruns.items()}
+    for k, r in r2_rerun_rows.items():
+        r["step"] = row_step(r)
+        if verbose:
+            print(
+                f"[aggregate] {k}: round-2 re-run <- {r['dir']} ({r['n']} episodes, "
+                f"{r['n_success']} successes)",
+                file=sys.stderr,
+            )
+    r2_cmp = {"lane_a": r2_rerun_rows.get("lane_a", ra), "lane_b": r2_rerun_rows.get("lane_b", rb)}
+    reran = bool(r2_rerun_rows)
+
+    def r2_compare_label(short: str, key: str, base: dict) -> str:
+        r = r2_cmp[key]
+        name = f"`checkpoint-{r['step']}`" if r.get("step") else f"`{r['dir'].name}`"
+        tail = " — wide data, re-measured seeded" if key in r2_rerun_rows else " — wide data"
+        return f"{short} round 2 {name}{tail}"
+
+    artefact_entries = [(lbl, load_eval(p)) for lbl, p in (artefact_runs or [])]
+
+    compare_entries = (
+        [(r2_compare_label("lane A", "lane_a", ra), r2_cmp["lane_a"], oa)]
+        + ([(r3_compare_label("lane A", r3a), r3a, oa)] if r3a else [])
+        + [(r2_compare_label("lane B", "lane_b", rb), r2_cmp["lane_b"], ob)]
+        + ([(r3_compare_label("lane B", r3b), r3b, ob3)] if r3b else [])
+    )
 
     r3_row_entries = list(r3_entries["lane_a"]) + list(r3_entries["lane_b"])
     if ob3 is not None:
@@ -2336,13 +2662,39 @@ def build(
             if r3_row_entries
             else no_rows_note
         ),
-        "R3_COMPARE_TABLE": ceiling_table(
-            [(f"lane A round 2 `checkpoint-{row_step(ra)}` — wide data", ra, oa)]
-            + ([(r3_compare_label("lane A", r3a), r3a, oa)] if r3a else [])
-            + [(f"lane B round 2 `checkpoint-{row_step(rb)}` — wide data", rb, ob)]
-            + ([(r3_compare_label("lane B", r3b), r3b, ob3)] if r3b else [])
+        "R3_COMPARE_TABLE": ceiling_table(compare_entries),
+        "R3_COMPARE_CAPTION": compare_caption(oa, ob, ob3) + above_oracle_note(compare_entries),
+        "R3_VERDICT": r3_verdict(
+            [("Lane A", r2_cmp["lane_a"], r3a), ("Lane B", r2_cmp["lane_b"], r3b)],
+            held_out_from,
+            reran,
         ),
-        "R3_COMPARE_CAPTION": compare_caption(oa, ob, ob3),
+        "R3_ARTEFACT_TABLE": (
+            validation_table(artefact_entries)
+            if artefact_entries
+            else "_Not in this report: no `--artefact-run LABEL=<run folder>` was supplied._"
+        ),
+        "R3_ARTEFACT_VERDICT": validation_verdict(artefact_entries),
+        "R3_ROWS_DEAD_TABLE": (
+            artefact_table(
+                r3_row_entries
+                + [(r2_compare_label("lane A", "lane_a", ra), r2_cmp["lane_a"]),
+                   (r2_compare_label("lane B", "lane_b", rb), r2_cmp["lane_b"])],
+                held_out_from,
+            )
+            if r3_row_entries
+            else no_rows_note
+        ),
+        "R3_APPENDIX_R2": appendix_rows_table(
+            ([("lane A round 2 `checkpoint-{}` — original P10 row".format(row_step(ra)), ra)]
+             if "lane_a" in r2_rerun_rows else [])
+            + ([("lane B round 2 `checkpoint-{}` — original P10 row".format(row_step(rb)), rb)]
+               if "lane_b" in r2_rerun_rows else []),
+            held_out_from,
+        ),
+        "R3_SEED_SENTENCE": seed_sentence(
+            [r for _lbl, r in r3_row_entries] + list(r2_cmp.values())
+        ),
         "R3_CEILINGS": ceiling_paragraph(ob, ob3, oa),
         "R3_RANKING": ranking_sentence(ra, rb, r3a, r3b),
         "R3_LOSS_TABLE": r3_loss_table,
@@ -2482,6 +2834,17 @@ def main(argv: list[str] | None = None) -> int:
         "--r3-oracle-b", type=Path,
         help="run folder of the round-3 eval-box B-oracle (lane B's round-3 ceiling)",
     )
+    ap.add_argument(
+        "--r2-rerun", action="append", default=[], metavar="LABEL=RUN",
+        help="round-2 headline checkpoint re-measured under round 3's evaluation; "
+             f"LABEL is {' or '.join(R3_ROW_LABELS)}. Used as round 2's side of the "
+             "comparison table; the original P10 row moves to the appendix",
+    )
+    ap.add_argument(
+        "--artefact-run", action="append", default=[], metavar="LABEL=RUN",
+        help="one run of the paired under-load test of `--fresh-first-obs`; repeatable. "
+             "LABEL is free text (the table's row name)",
+    )
     args = ap.parse_args(argv)
     rows = parse_rows(
         args.row,
@@ -2497,11 +2860,36 @@ def main(argv: list[str] | None = None) -> int:
         r3_oracle_b = Path(args.r3_oracle_b).expanduser().resolve()
         if not (r3_oracle_b / "out" / "eval" / "eval_results.csv").is_file():
             raise SystemExit(f"[aggregate] --r3-oracle-b: {r3_oracle_b} has no out/eval/eval_results.csv")
+    r2_reruns: dict[str, Path] = {}
+    for pair in args.r2_rerun:
+        if "=" not in pair:
+            raise SystemExit(f"[aggregate] --r2-rerun wants LABEL=RUN, got {pair!r}")
+        key, _sep, value = pair.partition("=")
+        key = key.strip()
+        if key not in R3_ROW_LABELS:
+            raise SystemExit(
+                f"[aggregate] --r2-rerun label {key!r} is not one of {', '.join(R3_ROW_LABELS)}"
+            )
+        p = Path(value.strip()).expanduser().resolve()
+        if not (p / "out" / "eval" / "eval_results.csv").is_file():
+            raise SystemExit(f"[aggregate] --r2-rerun {key}: {p} has no out/eval/eval_results.csv")
+        r2_reruns[key] = p
+    artefact_runs: list[tuple[str, Path]] = []
+    for pair in args.artefact_run:
+        if "=" not in pair:
+            raise SystemExit(f"[aggregate] --artefact-run wants LABEL=RUN, got {pair!r}")
+        label, _sep, value = pair.partition("=")
+        p = Path(value.strip()).expanduser().resolve()
+        if not (p / "out" / "eval" / "eval_results.csv").is_file():
+            raise SystemExit(f"[aggregate] --artefact-run {label}: {p} has no out/eval/eval_results.csv")
+        artefact_runs.append((label.strip(), p))
     text = build(
         rows=rows,
         held_out_from=args.held_out_from,
         r3_rows=parse_r3_rows(args.r3_row),
         r3_oracle_b=r3_oracle_b,
+        r2_reruns=r2_reruns,
+        artefact_runs=artefact_runs,
     )
     if args.stdout:
         sys.stdout.write(text)
