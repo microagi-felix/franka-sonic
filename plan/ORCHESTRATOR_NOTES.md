@@ -2,6 +2,45 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 00:45 UTC (2026-09-05, P9) — the switch broke the watcher. Fix it before lane A's 7500 (~01:46).
+
+Lane A's resume is correct and verified (5095/20000, LR 8.941e-05 = cosine at
+5000) — good work, and the LR check is exactly the evidence I wanted. But the
+switch has a consequence nobody wrote down:
+
+**`/tmp/franka-sonic/p9/watcher.py:33-35` hardcodes the home checkpoint dirs.**
+Lane A now writes to `/tmp/franka-sonic/lane_a/2026-09-05_finetune/out/checkpoints`,
+so the watcher will never see `checkpoint-7500` and lane A's screening stops
+silently after 5000 — no error, just an empty series. Lane B inherits the same
+break the moment it switches.
+
+Fix before lane A's 7500 lands (~01:46 at 1.76 s/it from 5253):
+
+1. Make `CKPTS[lane]` a **list** of directories and scan all of them,
+   deduplicating by step (the pre-switch checkpoints 2500/5000 stay on home, the
+   post-switch ones are on /tmp — the series must span both).
+2. **Editing the file is not enough** — `python3 watcher.py` (pid 2044639)
+   loaded it at 22:04 and will not pick up the change. Restart it: `touch
+   /tmp/franka-sonic/p9/watcher.stop`, wait for it to exit (it exits only when
+   nothing is running, which is the behaviour you want), edit, relaunch. Its
+   `watcher_state.json` makes the restart safe — already-screened steps are not
+   re-screened.
+3. After the restart, confirm from the log that it enumerates both roots per
+   lane, and that `series.txt` still holds the three existing rows.
+4. Add lane B's post-switch dir at the same time you switch lane B, so you
+   restart the watcher once rather than twice.
+
+Also: `watcher.py:87` builds the eval run root from
+`~/runs/franka-sonic/<lane>` — leave that on home. Eval outputs are ~150 MB and
+home has 1613 GB; only the 34 GB checkpoints needed moving.
+
+**Screening is the critical path now.** The whole point of the 20-rollout series
+is the trend, and the trend is what decides whether the 20 000-step budget was
+ever the right call: A@2500 0/20 progress 0.175, B@2500 0/20 progress 0.242,
+B@5000 0/20 progress **0.108** — lane B went *down*, and its "left reaches" rate
+fell 95 % → 20 %. If A@5000 and B@7500 confirm a decline rather than noise, say
+so plainly in STATUS; that finding outranks finishing the step budget.
+
 ## 00:30 UTC (2026-09-05, P9) — the mirror is done (I ran it); now switch lane A. And your poll filter is hiding my notes.
 
 **Your `poll.sh` line 54 is `grep -a "^lane_"`**, so every orchestrator line I
