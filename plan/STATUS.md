@@ -830,3 +830,19 @@ Format: `- YYYY-MM-DD HH:MM  <what happened>  [run=<path>] [rc=<n>]`
         lane_b  2500 -> 5000 -> 7500 : progress 0.242 -> 0.108 -> 0.425, milestone 2 25 % -> 20 % -> 70 %
     Neither lane has reached milestone 5 (right lifts) in any episode yet; every episode still ends on the horizon, not on a failure.
     Home 1478 GB free at 01:02 (drain continuing but slower); /tmp 10 486 GB.
+- 2026-09-05 02:11  bakeoff lane_a/eval OK  rc=0  gpus=0  run=/home/felixminzenmay/runs/franka-sonic/lane_a/2026-09-05_eval-2
+- 2026-09-05 02:13  bakeoff lane_b/eval OK  rc=0  gpus=4  run=/home/felixminzenmay/runs/franka-sonic/lane_b/2026-09-05_eval-2
+- 2026-09-05 02:15  P9 WP 9.2 — **the first successful handover of round 2**: lane A's checkpoint-7500 completes 1 of 20 episodes. Series after five screens:
+        lane_a  step  2500  0/20  progress 0.175  milestones  85 / 10 / 10 /  0 / 0 / 0   ~/runs/franka-sonic/lane_a/2026-09-04_eval    (25 min)
+        lane_a  step  5000  0/20  progress 0.467  milestones 100 / 90 / 90 /  0 / 0 / 0   ~/runs/franka-sonic/lane_a/2026-09-05_eval    (25 min)
+        lane_a  step  7500  **1/20**  progress 0.392  milestones  75 / 55 / 55 / 40 / 5 / 5   ~/runs/franka-sonic/lane_a/2026-09-05_eval-2  (26 min)
+        lane_b  step  2500  0/20  progress 0.242  milestones  95 / 25 / 20 /  5 / 0 / 0   ~/runs/franka-sonic/lane_b/2026-09-04_eval-2  (25 min)
+        lane_b  step  5000  0/20  progress 0.108  milestones  20 / 20 / 20 /  5 / 0 / 0   ~/runs/franka-sonic/lane_b/2026-09-04_eval-3  (26 min)
+        lane_b  step  7500  0/20  progress 0.425  milestones 100 / 70 / 70 / 15 / 0 / 0   ~/runs/franka-sonic/lane_b/2026-09-05_eval    (25 min)
+        lane_b  step 10000  0/20  progress 0.100  milestones  25 / 15 / 15 /  5 / 0 / 0   ~/runs/franka-sonic/lane_b/2026-09-05_eval-2  (24 min)
+    **What changed at lane A 7500 is the right arm.** Milestone 4 (right reaches) went 0 % -> 0 % -> **40 %**, and milestones 5 and 6 are non-zero for the first time in either lane (5 % each = the one success). The reach-then-stall diagnosis is being worked through in the expected order: the left arm learned to lift and place by 5000, the right arm started to reach by 7500. Round 1's lane B needed the same and never got past 1/20 either.
+    **The selection rule as it stands** (`python3 /tmp/franka-sonic/p9/stopping_rule.py`, advisory only — the early stop is off):
+        lane_a best = step 7500 (1/20, progress 0.392), 3 screened, the rule is not armed yet (arms at 4).
+        lane_b best = step 7500 (0/20, progress 0.425), 4 screened, non-improvement streak **1** (10000 did not beat 7500). Had the early stop still been live it would fire on lane B if the 12500 screen also fails to beat 0/20 & 0.425 — which is precisely the case the orchestrator's 23:40 note argues is a coin flip against a genuinely rising curve, and lane B has already dipped and recovered twice (0.242 -> 0.108 -> 0.425 -> 0.100).
+    Both trainers healthy and inside the step-time guard at every sample so far (lane A 1.62-1.85 s/it against the 2.00 cap, lane B 1.15-1.46 against 1.65; `/tmp/franka-sonic/p9/guard.log`). Lane A is at 8505/20000, lane B at 11136/20000. Projected 20 000: lane A ~07:30, lane B ~05:35 — the session ends 05:39, so attempt 2 finishes lane A.
+    Round-3 generation healthy: 152 MB of worker HDF5 at 02:13 against P7's 421 MB for 1024 episodes, i.e. roughly 370 of 1024 episodes in 2.2 h; projected finish ~06:10, so it too crosses into attempt 2.
