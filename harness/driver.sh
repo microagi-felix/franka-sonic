@@ -33,7 +33,9 @@ cd "$REPO_ROOT" || exit 1
 STATUS="$REPO_ROOT/plan/STATUS.md"
 PROMPTS="$REPO_ROOT/plan/prompts"
 GATES="$REPO_ROOT/harness/gates"
-DRIVER_RUNS="$HOME/runs/franka-sonic/driver"
+# DRIVER_RUNS override (2026-09-05): lets a fallback driver keep its lock, logs and attempts on
+# instance-local /tmp when the shared home volume is full (it drained to the floor twice today).
+DRIVER_RUNS="${DRIVER_RUNS:-$HOME/runs/franka-sonic/driver}"
 LOGDIR="$DRIVER_RUNS/$(date +%F)"
 
 CLAUDE="${DRIVER_CLAUDE:-$HOME/.local/bin/claude}"
