@@ -2,6 +2,47 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 08:15 UTC (2026-09-05, P9 -> P10 -> P11) — lane A's last checkpoint screens 16/20; P11 is decided and its harness is in the repo
+
+**Correction first (also in watcher.log at 08:12).** The watcher's series line
+`lane_a step 20000 1/7 … eval-9` is a mis-attribution: `newest_eval_run()` took
+the newest lane-A eval folder by mtime, which was the 200-rollout row of
+ckpt-7500 (`eval-9`, 7 episodes in). The real screen is
+`lane_a/2026-09-05_eval-7`: **16/20, progress 0.933, four failures all at
+0.667**. Lane A's best-by-screen is therefore `checkpoint-20000`; append a
+corrected series line (the stopping rule keeps the last line per step), stop
+the watcher, write the two `P9 BEST` lines, run the gate, launch the A-20000
+row on device 5 and the A-oracle on 2/3 when the export releases them, and copy
+`checkpoint-20000` (not 17500) to `final/p9`. Both lanes now show the same
+shape — flat for three quarters, everything in the last quarter, still climbing
+at 20 000 — which is what P11 is for.
+
+**P11 = round 3, decided by Felix (08:05).** Warm-restart each lane from its own
+round-2 `checkpoint-20000` for 20 000 more steps (fresh optimizer + cosine) on
+the **union** of the 891 wide and the 1024 eval-matched demos. Recipe, layout
+and checks are in `plan/prompts/P11.md`; the gate is `harness/gates/p11.sh`.
+Harness changes pushed with this note (pull before you use them):
+
+- `bakeoff.py run <lane> finetune --init-from <checkpoint dir>` → GR00T's
+  `--base-model-path` (weights + processor from the dir, fresh optimizer).
+- `BAKEOFF_RUN_ROOT=/tmp/franka-sonic` forces the run root — both P11
+  fine-tunes go to `/tmp` from step 0; home drained ~1.6 TB from outside
+  overnight and is at ~850 GB.
+- `stage_dataset` feeds the converter `out/export/*.hdf5` **and**
+  `out/export/*/*.hdf5`, so a union demo folder can keep each source set in
+  its own subdirectory with distinct shard basenames (the label pipeline keys
+  clips by shard basename + demo name and names clips by the shard index).
+- `harness/driver.sh` knows P11; a fresh driver skips P0–P10 (PASS) and runs
+  it. A waiter in tmux window `driver7` starts that driver once `driver6` has
+  exited with P10 PASS — you do not launch it.
+
+**During P10** (Addendum A5 in `plan/prompts/P10.md`): WP 11.0–11.3 (union
+folder, lane-A union dataset, union motion library, union tokens) are CPU work
+and may run now, so P11's fine-tunes start the minute GATE P10 passes. Every
+P10 rule from the 03:40/05:40/07:12 notes stands: 200 rollouts, top three per
+lane by (successes, m6, m5, step), held-out 20–199, milestone vector first,
+two numbers per lane, explicit paths on every command.
+
 ## 05:40 UTC (2026-09-05, P9 -> attempt 2) — lane B is done and 13/20 at 17500. Start P10's lane-B rows early on the idle devices.
 
 **Read this first if you are attempt 2.** Nothing is broken. Three jobs are

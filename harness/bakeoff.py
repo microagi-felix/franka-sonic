@@ -154,6 +154,19 @@ def run_root() -> tuple[Path, str | None]:
     Returns (root, fallback_note). The note is stamped into config.json so a
     reader always knows an artifact is on non-persistent storage.
     """
+    # P11 (2026-09-05): BAKEOFF_RUN_ROOT forces a root regardless of free space. Round 2's
+    # trainers watched the shared home volume drain from OUTSIDE our control (2495 -> 899 GB
+    # in one night) and had to be moved mid-run; a 20 000-step fine-tune keeping 8 x 34 GB
+    # checkpoints is ~270 GB per lane, so P11 puts both trainers on instance-local /tmp from
+    # step 0 instead of waiting for the floor to trip.
+    forced = os.environ.get("BAKEOFF_RUN_ROOT")
+    if forced:
+        root = Path(os.path.expanduser(forced))
+        root.mkdir(parents=True, exist_ok=True)
+        note = None if root == RUNS else (
+            f"BAKEOFF_RUN_ROOT={forced} (orchestrator-forced; instance-local /tmp is NOT "
+            "persistent across pod restarts)")
+        return root, note
     RUNS.mkdir(parents=True, exist_ok=True)
     free = free_gb(RUNS)
     floor = min_home_free_gb()
@@ -700,9 +713,17 @@ def stage_dataset(run: Run) -> int:
     demos = _need(run, "demos", "the shared/*_demos run folder") if run.args.demos else demos
     if demos is None or not (demos / "out" / "export").is_dir():
         sys.exit(f"[bakeoff] no export shards under {demos}/out/export")
+    # P11 (2026-09-05): a union demo folder keeps each source set in its own subdirectory
+    # (out/export/<set>/demos_shard*.hdf5 with the video dirs beside them) so shard basenames
+    # stay distinct — label_tokens keys clips by (shard basename, demo name). Hand the
+    # converter every level that has shards; it refuses a pattern that matches nothing.
+    export_dir = demos / "out" / "export"
+    patterns = [str(export_dir / pat) for pat in ("*.hdf5", "*/*.hdf5") if any(export_dir.glob(pat))]
+    if not patterns:
+        sys.exit(f"[bakeoff] no *.hdf5 or */*.hdf5 under {export_dir}")
     out = run.dir / "out" / "gr00t_v2"
     cmd = [str(GR00T_PY), str(DATA / "convert_hdf5_to_gr00t_v2.py"),
-           "--input", str(demos / "out" / "export" / "*.hdf5"), "--output", str(out),
+           "--input", *patterns, "--output", str(out),
            "--fps", str(RATE_HZ), "--task", "hand the block from the left arm to the right",
            "--joint-label", "ik_target_clamped", "--video-size", "640x360",
            "--validate-max-episodes", "5",
@@ -729,19 +750,21 @@ def _modality_config(lane: str) -> Path:
 
 def _finetune_cmd(dataset: Path, out: Path, num_gpus: int, lane: str = "lane_a",
                   train_steps: int = 2000, save_steps: int = 500,
-                  save_total_limit: int = 5, master_port: int = 29517) -> list[str]:
+                  save_total_limit: int = 5, master_port: int = 29517,
+                  base_model: str = "nvidia/GR00T-N1.7-3B") -> list[str]:
     """The fine-tune command. Round 1's numbers are the defaults, so every round-1
     invocation reproduces token-for-token; P9 raises the budget through --train-steps
     /--save-steps/--save-total-limit (WP 9.0). NOTE the CLI's own --max-steps means the
     *evaluation* horizon, which is why the trainer's step budget is a different flag here.
     Only --dataset-path, --modality-config-path and --output-dir may ever differ between
-    the two lanes."""
+    the two lanes. P11 (2026-09-05) adds --base-model-path: each lane warm-starts from its
+    own round-2 checkpoint-20000 (--init-from) — the same treatment for both lanes."""
     launch = [str(GR00T_PY), "-m", "gr00t.experiment.launch_finetune"]
     if num_gpus > 1:
         launch = [str(Path(GR00T_PY).parent / "torchrun"), f"--nproc_per_node={num_gpus}",
                   f"--master_port={master_port}", "-m", "gr00t.experiment.launch_finetune"]
     return launch + [
-        "--base-model-path", "nvidia/GR00T-N1.7-3B",
+        "--base-model-path", base_model,
         "--dataset-path", str(dataset),
         "--embodiment-tag", "NEW_EMBODIMENT",
         "--modality-config-path", str(_modality_config(lane)),
@@ -781,14 +804,21 @@ def stage_finetune(run: Run) -> int:
     # torchrun's rendezvous port. P9 trains both lanes concurrently on one node, and two
     # torchrun jobs cannot bind the same port; it is a launcher detail, not a hyperparameter.
     master_port = 29517 if run.lane != "lane_b" else 29518
+    # P11: warm start from a GR00T checkpoint dir (weights + processor; the optimizer and the
+    # LR schedule start fresh — this is NOT --resume-from-checkpoint, which is a bool that
+    # continues the run inside --output-dir).
+    init_from = getattr(run.args, "init_from", None)
+    base_model = os.path.expanduser(init_from) if init_from else "nvidia/GR00T-N1.7-3B"
+    if init_from and not (Path(base_model) / "config.json").is_file():
+        sys.exit(f"[bakeoff] --init-from {base_model} has no config.json (need a GR00T checkpoint dir)")
     cmd = _finetune_cmd(dataset, out, n_gpus, run.lane, train_steps, save_steps,
-                        save_total_limit, master_port)
+                        save_total_limit, master_port, base_model)
     wp = "P3 WP 3.3 — lane B's policy; gate p3" if run.lane == "lane_b" else "P1 WP 1.3 — lane A's policy; gate p1"
     run.write_readme(
         what=(f"gr00t.experiment.launch_finetune on {dataset} with {n_gpus} GPU(s): "
               f"--max-steps {train_steps} --save-steps {save_steps} --global-batch-size 32, "
               "SONIC-tutorial colour jitter, "
-              f"4 dataloader workers, default LR/optimizer, no LoRA; modality config {_modality_config(run.lane)}."),
+              f"4 dataloader workers, default LR/optimizer, no LoRA; modality config {_modality_config(run.lane)}; base model {base_model}."),
         why=f"{wp} reads out/checkpoints/checkpoint-{train_steps}.",
     )
     run.write_cmd([f"cd {os.path.expanduser('~/Isaac-GR00T')}",
@@ -1540,6 +1570,9 @@ def main(argv=None) -> int:
                    help="lane_b/*_export_onnx run folder (encoder+decoder ONNX); default newest")
     r.add_argument("--tokens", default=None,
                    help="lane_b/*_label_tokens run folder (out/tokens) for oracle_b; default newest")
+    r.add_argument("--init-from", default=None,
+                   help="finetune: GR00T checkpoint dir to warm-start from (P11: each lane's own "
+                        "round-2 checkpoint-20000); default the NVIDIA base model")
     r.add_argument("--max-episodes", type=int, default=0,
                    help="lane_b/label_tokens: label only the first N dataset episodes "
                         "(P8 WP 8.2 ceiling tests; 0 = all)")

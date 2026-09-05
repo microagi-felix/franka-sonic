@@ -48,7 +48,10 @@ PHASE_TIMEOUT="${DRIVER_PHASE_TIMEOUT:-8h}"
 P0_WAIT_POLLS="${DRIVER_P0_WAIT_POLLS:-240}"   # 240 × 60 s = 4 h
 P0_POLL_SECONDS="${DRIVER_P0_POLL_SECONDS:-60}"
 GR00T_PY="$HOME/Isaac-GR00T/.venv/bin/python"
-PHASES="P0 P1 P2 P3 P4 P5 P6 P7 P8 P9 P10"
+# P11 added 2026-09-05 (round 3: warm-restart both lanes on the wide + eval-matched union).
+# A running driver has already expanded its own list; a fresh `bash harness/driver.sh`
+# skips every phase whose GATE PASS is in STATUS.md and continues with the next one.
+PHASES="${DRIVER_PHASES:-P0 P1 P2 P3 P4 P5 P6 P7 P8 P9 P10 P11}"
 
 mkdir -p "$LOGDIR" || exit 1
 
