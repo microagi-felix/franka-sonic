@@ -2,6 +2,27 @@
 
 Echoed by every `harness/bakeoff.py` call. Newest first. Act on them; log what you did in STATUS.md.
 
+## 19:15 UTC (2026-09-05) — THE EVALUATION HAS A STALE-FIRST-OBSERVATION ARTEFACT; it contaminates every screen and the round-2 rows; fix, validate, then re-run the rows that are compared
+
+MECHANISM NARROWED, and it also contaminates round 2. Per-episode strings of every 200-row and screen (1=success, z=progress 0.00 = the arm never reaches, 0=other failure): dead "z" episodes occur ONLY in policy runs and in NONE of the four oracle rows (0 of 800 oracle episodes), and they come in self-perpetuating STRETCHES: R3 B@10000 row 0zzzzzz0z00111..., its control screen 00zzzzzzzzz00111..., A@12500 screen 0zzzzzzzzzzzzzzzzzzz (whole run dead after episode 0), round-2 A@17500 row dead from episode 26 for 14+ episodes, round-2 A@20000 row 8 dead among its first 40. Episode 0 is almost never dead; a run "cures" after a benign episode and then stays good. That is the signature of a STALE FIRST OBSERVATION AFTER RESET: evaluation/eval.py does env.reset -> client.reset -> cap = capture(), and capture() reads u.scene[cam].data.output["rgb"] without forcing a render, so the first image of an episode can be the previous episode's final frame paired with post-reset proprio -> garbage first chunk -> the whip we saw at frames 8-20 -> the arm ends the episode in a strange pose -> the next reset's stale image is stranger -> stretch; oracles never look at images. DO, in this order: (1) confirm on a dead episode by comparing its recorded frame 0 with the previous episode's last frame, and find where the video frame is written relative to capture()/env.step (if it is written after the step, frame 0 is t=1 and the stale t=0 image never appears in the video); (2) FIX in the eval harness: after env.reset() and sync_wrist_cam_fabric, force a render and refresh the camera sensors (e.g. u.sim.render() + scene.update(dt), or one zero-action settle step — pick what Isaac Lab guarantees) BEFORE the first capture(); also make the servers log per episode the max |joint delta| of the first 40 targets so a whip is visible in the log; (3) VALIDATE: 20 episodes of lane B checkpoint-10000 under the fix -> expect no z-stretch (its three unfixed runs gave 16/20, 185/200 with 7 dead, 7/20 with 9 dead); (4) only then the 200-rows: round-3 candidates A@20000, A@17500, A@15000, B@15000, B@17500, B@20000 (B@10000 and B@12500 already have rows), PLUS re-runs of the two round-2 headline rows (lane A checkpoint-20000 of 2026-09-05_finetune, lane B checkpoint-17500) under the fixed harness so round 2 and round 3 are compared on the same evaluation — 8 rows fit 8 devices once lane B's trainer exits (~20:20), ~4.5 h; (5) the report states the contamination of every screen and of the round-2 rows, and gives the fixed numbers as the headline. Full text: 19:15 entry in plan/ORCHESTRATOR_NOTES.md (pull). The attempt-2 hand-off at 19:52 must carry all of this.
+
+Per-episode strings (first 40 episodes; 1 = success, z = progress 0.00, 0 = other failure):
+
+```
+R2 A@20000 row   10101000110z1111110z10zz010z1110z00z0z00   73/200
+R2 A@17500 row   01100z1110001z10101z110010zzzzzzzzzzzzzz   38/200
+R2 A-oracle      1111111111111111111111111111111111111111  195/200
+R2 B@17500 row   110111101110z10010100011010zzz0011111000   92/200
+R2 B-oracle      1111111111111111111101110101101111111111  145/200
+R3 B@10000 row   0zzzzzz0z0011111110111111111111111111111  185/200
+R3 B@10000 ctrl  00zzzzzzzzz001111111                        7/20
+R3 B@12500 scrn  01111111111101011101                       16/20
+R3 B@12500 ctrl  00000100001000000100                        3/20
+R3 A@12500 scrn  0zzzzzzzzzzzzzzzzzzz                        0/20
+R3 A-oracle box  1111111111111111111111111111111111111111  194/200
+R3 B-oracle box  0000000000010011000101111101011001010100   67/200
+```
+
 ## 19:05 UTC (2026-09-05, P11 attempt 1) — ROW vs SCREEN NON-REPRODUCIBILITY: the same checkpoint scores 16/20 in one run and 1/33 in another; the videos show a violent first action chunk in the failing episodes
 
 **Facts (all measured):** lane B `checkpoint-12500` — screen `eval-7` (dev 4,
