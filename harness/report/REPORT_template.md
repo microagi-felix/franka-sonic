@@ -596,6 +596,9 @@ arm-position error of the decoder and not a gripper error.
 
 ### 10.6 Does the round-2 ranking survive?
 
+On the same slice as every other verdict here — the live episodes of the held-out
+range, with round 2 represented by its concurrent re-measurement:
+
 {{R3_RANKING}}
 
 ### 10.7 Training loss of both rounds, per lane

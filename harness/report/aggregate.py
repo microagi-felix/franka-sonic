@@ -1658,9 +1658,27 @@ def compare_caption(ceil_a: dict, ceil_b2: dict, ceil_b3: dict | None) -> str:
     )
 
 
-def ranking_sentence(ra: dict, rb: dict, r3a: dict | None, r3b: dict | None) -> str:
+def ranking_sentence(
+    ra: dict, rb: dict, r3a: dict | None, r3b: dict | None,
+    held_out_from: int = 20, mixtures: frozenset = frozenset(),
+) -> str:
     """Does round 2's ordering survive round 3? Computed both ways: which lane is
-    higher, and whether the exact intervals separate them at this n."""
+    higher, and whether the exact intervals separate them at this n.
+
+    On the same slice as every other verdict in section 10 — the live episodes of
+    the held-out range — because an ordering computed on all-200 rates is an
+    ordering of policy rates plus dead-episode rates, and the dead rate differs by
+    an order of magnitude between the rows being ordered."""
+    mixed = [
+        lbl for lbl, r in (("lane A round 3", r3a), ("lane B round 3", r3b),
+                           ("lane A round 2", ra), ("lane B round 2", rb))
+        if r is not None and str(r["dir"]) in mixtures
+    ]
+    ra, rb = live_restrict(ra, held_out_from), live_restrict(rb, held_out_from)
+    if r3a is not None:
+        r3a = live_restrict(r3a, held_out_from)
+    if r3b is not None:
+        r3b = live_restrict(r3b, held_out_from)
 
     def order(x: dict, y: dict) -> str:
         if x["n_success"] * y["n"] == y["n_success"] * x["n"]:
@@ -1686,6 +1704,12 @@ def ranking_sentence(ra: dict, rb: dict, r3a: dict | None, r3b: dict | None) -> 
         )
 
     r2 = line("**Round 2**", ra, rb)
+    if mixed:
+        return (
+            r2 + " **Round 3**: not answerable — "
+            + ", ".join(mixed) + " is a regime mixture (10.3c), so no ordering computed "
+            "from it is a property of the checkpoints."
+        )
     if r3a is None or r3b is None:
         missing = [x for x in (("lane A" if r3a is None else ""), ("lane B" if r3b is None else "")) if x]
         who = " and ".join(missing)
@@ -2883,7 +2907,9 @@ def build(
             [r for _lbl, r in r3_row_entries] + list(r2_cmp.values())
         ),
         "R3_CEILINGS": ceiling_paragraph(ob, ob3, oa),
-        "R3_RANKING": ranking_sentence(ra, rb, r3a, r3b),
+        "R3_RANKING": ranking_sentence(
+            r2_cmp["lane_a"], r2_cmp["lane_b"], r3a, r3b, held_out_from, mixture_dirs
+        ),
         "R3_LOSS_TABLE": r3_loss_table,
         "R3_LOSS_TREND_R2": loss_trend([("Lane A", ft_a_dir), ("lane B", ft_b_dir)]),
         "R3_LOSS_TREND_R3": loss_trend(
