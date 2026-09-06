@@ -615,7 +615,9 @@ def eval_runs(lane: str) -> list[dict]:
     return out
 
 
-def round_evals(lane: str, round_: int = 2) -> tuple[dict[int, dict], dict[int, dict]]:
+def round_evals(
+    lane: str, round_: int = 2, screens_until: dt.datetime | None = None
+) -> tuple[dict[int, dict], dict[int, dict]]:
     """(screens, rows) of `round_` keyed by fine-tune step.
 
     Screens are the 20-rollout runs — the last one per step wins, which is what
@@ -634,6 +636,15 @@ def round_evals(lane: str, round_: int = 2) -> tuple[dict[int, dict], dict[int, 
         )
         if bucket is None:
             continue
+        # The screening SERIES is the one the pre-registered rule was applied to.
+        # Screens run afterwards -- controls, re-screens, discriminator arms -- are
+        # evidence about the instrument, not part of the selection, and letting the
+        # newest one win per step would silently rewrite the series the pick was made
+        # on. They are reported separately (10.2, the re-screen table).
+        if bucket is screens and screens_until is not None:
+            end = folder_end(e["dir"])
+            if end and end > screens_until:
+                continue
         prev = bucket.get(e["step"])
         if prev is None or folder_end(e["dir"]) >= folder_end(prev["dir"]):
             bucket[e["step"]] = e
@@ -646,9 +657,11 @@ def round2_evals(lane: str) -> tuple[dict[int, dict], dict[int, dict]]:
     return round_evals(lane, 2)
 
 
-def round3_evals(lane: str) -> tuple[dict[int, dict], dict[int, dict]]:
+def round3_evals(
+    lane: str, screens_until: dt.datetime | None = None
+) -> tuple[dict[int, dict], dict[int, dict]]:
     """Round 3's (screens, rows) — the same code, the other round."""
-    return round_evals(lane, 3)
+    return round_evals(lane, 3, screens_until)
 
 
 def rank_key(r: dict) -> tuple:
@@ -1187,34 +1200,30 @@ def segment_table(entries: list[tuple[str, dict, int, int]]) -> str:
     return md_table(header, rows)
 
 
-def artefact_table(entries: list[tuple[str, dict]], held_out_from: int = 20) -> str:
+def artefact_table(
+    entries: list[tuple[str, dict]], held_out_from: int = 20, show_held: bool = True
+) -> str:
     """Every row with its dead-episode count and positions and its outcome string.
 
     The 21:05 reporting rule: the artefact was not fixed before these rows ran,
     so each row carries the evidence needed to judge how much of it it caught."""
-    header = [
-        "row",
-        "all episodes run",
-        f"held out {held_out_from}–199",
-        "dead (progress 0.00)",
-        "dead positions",
-        "outcome string (1 success / z dead / 0 other failure)",
-    ]
+    header = ["row", "all episodes run"]
+    if show_held:
+        header.append(f"held out {held_out_from}–199")
+    header += ["dead (progress 0.00)", "dead positions",
+               "outcome string (1 success / z dead / 0 other failure)"]
     rows = []
     for label, r in entries:
         dead = dead_indices(r)
-        held = restrict(r, held_out_from)
-        rows.append(
-            [
-                label,
-                f"{r['n_success']}/{r['n']} ({100 * r['success_rate']:.1f} %)",
-                (f"{held['n_success']}/{held['n']} ({100 * held['success_rate']:.1f} %)"
-                 if held["n"] else "n/a"),
-                f"**{len(dead)}**" if dead else "0",
-                ranges_text(dead),
-                f"`{ep_marks(r, 60)}`",
-            ]
-        )
+        row = [label, f"{r['n_success']}/{r['n']} ({100 * r['success_rate']:.1f} %)"]
+        if show_held:
+            held = restrict(r, held_out_from)
+            row.append(
+                f"{held['n_success']}/{held['n']} ({100 * held['success_rate']:.1f} %)"
+                if held["n"] else "n/a"
+            )
+        row += [f"**{len(dead)}**" if dead else "0", ranges_text(dead), f"`{ep_marks(r, 60)}`"]
+        rows.append(row)
     return md_table(header, rows)
 
 
@@ -1775,6 +1784,39 @@ def r3_verdict(
     )
 
 
+def headline_note(lanes: list[tuple[str, dict[int, dict], dict | None]]) -> str:
+    """Say so, per lane, when the row quoted as the lane's result is not the
+    checkpoint the pre-registered rule picked from the screens.
+
+    The rule fixed the pick before any 200-rollout row existed and it is not being
+    re-run to fit the rows; but a report that quietly quoted a different row as
+    "the lane's result" would be selecting on the outcome it is reporting."""
+    bits = []
+    for short, screens, head in lanes:
+        done = complete_screens(screens)
+        if not done or head is None or not head.get("step"):
+            continue
+        picked = max(done.values(), key=rank_key)["step"]
+        if picked == head["step"]:
+            bits.append(
+                f"**{short}**: the row quoted is `checkpoint-{picked}`, which is also what "
+                "the pre-registered rule picked from the screens — no substitution."
+            )
+            continue
+        bits.append(
+            f"**{short}**: the pre-registered rule picked `checkpoint-{picked}` "
+            f"({count_text(done[picked])} on its screen), and that checkpoint keeps its "
+            f"200-rollout row in every table above — but the row quoted as {short}'s "
+            f"round-3 result is `checkpoint-{head['step']}`, because "
+            f"`checkpoint-{picked}`'s row turned out to be a regime mixture with no single "
+            "rate (10.3c) while this one is the lane's most reproducible row. **That is a "
+            "substitution made after seeing the rows, and it is the one place in this "
+            "report where that happens.** It does not change the pre-registered selection, "
+            "which stands as written; it changes which number is quoted, and both are given."
+        )
+    return " ".join(bits)
+
+
 def appendix_rows_table(entries: list[tuple[str, dict]], held_out_from: int = 20) -> str:
     """The original, unseeded round-2 rows, kept whole rather than replaced."""
     if not entries:
@@ -2211,6 +2253,8 @@ def build(
     stopped_runs: list[tuple[str, Path]] | None = None,
     segments: list[tuple[str, Path, int, int]] | None = None,
     mixtures: list[Path] | None = None,
+    screens_until: dt.datetime | None = None,
+    rescreens: list[tuple[str, Path]] | None = None,
 ) -> str:
     rows = rows or {}
     results: dict[str, dict] = {}
@@ -2374,7 +2418,7 @@ def build(
     for lane in ("lane_a", "lane_b"):
         r3_ft_all[lane] = finetune_dirs(lane, round_=3)
         r3_ft[lane] = r3_ft_all[lane][-1] if r3_ft_all[lane] else None
-        sc, _rw = round3_evals(lane)
+        sc, _rw = round3_evals(lane, screens_until)
         r3_screens[lane] = {s: dict(load_eval(e["dir"]), step=s) for s, e in sorted(sc.items())}
         r3_screen_dirs[lane] = [e["dir"] for _s, e in sorted(sc.items())]
         r3_lane_rows[lane] = [dict(load_eval(p), step=None) for p in r3_rows.get(lane, [])]
@@ -2441,6 +2485,7 @@ def build(
     stopped_entries = [(lbl, load_eval(p)) for lbl, p in (stopped_runs or [])]
     segment_entries = [(lbl, load_eval(p), a, b) for lbl, p, a, b in (segments or [])]
     mixture_dirs = frozenset(str(Path(p).expanduser().resolve()) for p in (mixtures or []))
+    rescreen_entries = [(lbl, load_eval(p)) for lbl, p in (rescreens or [])]
 
     compare_entries = (
         [(r2_compare_label("lane A", "lane_a", ra), r2_cmp["lane_a"], oa)]
@@ -2781,6 +2826,9 @@ def build(
         ),
         "R3_COMPARE_TABLE": ceiling_table(compare_entries),
         "R3_COMPARE_CAPTION": compare_caption(oa, ob, ob3) + above_oracle_note(compare_entries),
+        "R3_HEADLINE_NOTE": headline_note(
+            [("Lane A", r3_screens["lane_a"], r3a), ("Lane B", r3_screens["lane_b"], r3b)]
+        ),
         "R3_VERDICT": r3_verdict(
             [("Lane A", r2_cmp["lane_a"], r3a), ("Lane B", r2_cmp["lane_b"], r3b)],
             held_out_from,
@@ -2792,6 +2840,11 @@ def build(
             + [(r2_compare_label("lane A", "lane_a", ra), r2_cmp["lane_a"]),
                (r2_compare_label("lane B", "lane_b", rb), r2_cmp["lane_b"])],
             held_out_from,
+        ),
+        "R3_RESCREEN_TABLE": (
+            artefact_table(rescreen_entries, 0, show_held=False)
+            if rescreen_entries
+            else "_No checkpoint was re-screened after the selection._"
         ),
         "R3_REGIME_TABLE": (
             segment_table(segment_entries)
@@ -2975,6 +3028,17 @@ def main(argv: list[str] | None = None) -> int:
              "comparison table; the original P10 row moves to the appendix",
     )
     ap.add_argument(
+        "--r3-screens-until", metavar="ISO",
+        help="only 20-rollout screens finished before this UTC timestamp form the round-3 "
+             "screening series (the series the pre-registered rule was applied to); later "
+             "screens belong in --r3-rescreen",
+    )
+    ap.add_argument(
+        "--r3-rescreen", action="append", default=[], metavar="LABEL=RUN",
+        help="a 20-rollout screen of an already-screened checkpoint, run after the "
+             "selection; reported as instrument evidence, never as part of the series",
+    )
+    ap.add_argument(
         "--r3-segment", action="append", default=[], metavar="LABEL=RUN:FIRST-LAST",
         help="one regime segment of a bistable row (inclusive episode range); repeatable",
     )
@@ -3051,6 +3115,12 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"[aggregate] --r3-segment {label}: {rp} has no out/eval/eval_results.csv")
         segments.append((label.strip(), rp, first, last))
     mixtures = [Path(m).expanduser().resolve() for m in args.r3_mixture]
+    rescreens = labelled(args.r3_rescreen, "--r3-rescreen")
+    screens_until = None
+    if args.r3_screens_until:
+        screens_until = parse_ts(args.r3_screens_until)
+        if screens_until is None:
+            raise SystemExit(f"[aggregate] --r3-screens-until: cannot parse {args.r3_screens_until!r}")
     text = build(
         rows=rows,
         held_out_from=args.held_out_from,
@@ -3061,6 +3131,8 @@ def main(argv: list[str] | None = None) -> int:
         stopped_runs=stopped_runs,
         segments=segments,
         mixtures=mixtures,
+        screens_until=screens_until,
+        rescreens=rescreens,
     )
     if args.stdout:
         sys.stdout.write(text)

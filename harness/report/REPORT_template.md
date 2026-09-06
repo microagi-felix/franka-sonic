@@ -438,6 +438,14 @@ mean progress.
 - {{R3_SCREEN_PICK_A}}
 - {{R3_SCREEN_PICK_B}}
 
+**Six checkpoints were screened again after the selection was made**, as controls
+and as arms of the diagnostic experiments in 10.3a and 10.3c. They are not part
+of the series above and were not available when the rule was applied — putting
+them there would rewrite the selection with hindsight — but they are the sharpest
+evidence in this report that a 20-rollout screen does not measure a checkpoint:
+
+{{R3_RESCREEN_TABLE}}
+
 A screen that has not finished its twenty rollouts is marked partial in the table
 above and takes part in no ranking. That is not caution for its own sake: the one
 time a partial row was read as a screen in this campaign it turned lane A's
@@ -528,8 +536,8 @@ Every rate below is over the **live** episodes: those the arm actually started.
 The all-episode mixture stays in the table beside it, labelled, with its dead
 count, because hiding it would be its own kind of dishonesty.
 
-**Episodes 0–{{HELDOUT_FROM}} come out**, as everywhere else in this report: they
-are the seeds the 20-rollout screens used to pick the checkpoint.
+**The first {{HELDOUT_FROM}} episodes come out**, as everywhere else in this
+report: they are the seeds the 20-rollout screens used to pick the checkpoint.
 
 {{R3_LIVE_TABLE}}
 
@@ -547,15 +555,16 @@ The milestone vectors elsewhere in section 10 are computed over **all** episodes
 including dead ones, and are not restated on the live slice; read them as the
 shape of a row's failures rather than as its rate.
 
-### 10.3b Rows stopped before 200 rollouts
+### 10.3b Rows that are not rows: stopped, or still running at report time
 
 Four rows were stopped by the orchestrator at 21:44 UTC on 2026-09-05, part-way
 through, to drop the node from eight concurrent evaluations to four and see
-whether the lane-B collapse below was load or the checkpoint. Their partial
-results are kept — nothing was discarded — but a partial row is **not** a row:
-none of them is ranked, none appears in 10.3, and none is compared with anything.
-They are here because leaving them out would make the eight launched rows look
-like six:
+whether the lane-B collapse below was load or the checkpoint; one more was still
+running when this report was generated. Their partial results are kept — nothing
+was discarded — but a partial row is **not** a row: none is ranked, none appears
+in 10.3, and none is compared with anything. They are here with their counts and
+outcome strings because leaving them out would make the launched rows look fewer
+than they were:
 
 {{R3_STOPPED_TABLE}}
 
@@ -573,6 +582,9 @@ is dropped.
 {{R3_COMPARE_CAPTION}}
 
 {{R3_VERDICT}}
+
+**Which row is quoted as each lane's result, and whether that is the
+pre-registered one.** {{R3_HEADLINE_NOTE}}
 
 ### 10.5 The two lane-B oracle rows
 
