@@ -515,6 +515,38 @@ feeds the next reset a stranger stale image — and it means the artefact cannot
 subtracted from a row as a constant. No number in this report is corrected for
 it; the dead count is reported beside every rate instead.
 
+### 10.3c The verdict slice: live episodes, and the rows that have no single rate
+
+Two things have to come out of a rate before it means anything here, and both are
+measured rather than assumed.
+
+**Dead episodes come out.** They are the harness artefact of 10.3a, their rate on
+a single checkpoint has been measured anywhere from 1 to 93 of 200 in this
+campaign, and that rate is not constant across rows — so an all-episode number is
+a policy rate plus an artefact rate in a mixture that cannot be undone afterwards.
+Every rate below is over the **live** episodes: those the arm actually started.
+The all-episode mixture stays in the table beside it, labelled, with its dead
+count, because hiding it would be its own kind of dishonesty.
+
+**Episodes 0–{{HELDOUT_FROM}} come out**, as everywhere else in this report: they
+are the seeds the 20-rollout screens used to pick the checkpoint.
+
+{{R3_LIVE_TABLE}}
+
+**And some rows have no single rate at all.** A run can flip between a
+task-completing regime and a stalling one *mid-run*, with no relaunch, no
+configuration change and the same server process throughout — measured here, in
+both directions, and in runs launched every available way. For such a row
+`successes/200` is a mixture of its segments in whatever proportion that
+particular run happened to visit them, which is a property of the run and not of
+the checkpoint. Those rows are segmented at their flips instead:
+
+{{R3_REGIME_TABLE}}
+
+The milestone vectors elsewhere in section 10 are computed over **all** episodes,
+including dead ones, and are not restated on the live slice; read them as the
+shape of a row's failures rather than as its rate.
+
 ### 10.3b Rows stopped before 200 rollouts
 
 Four rows were stopped by the orchestrator at 21:44 UTC on 2026-09-05, part-way

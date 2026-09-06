@@ -1095,6 +1095,98 @@ def ranges_text(idx: list[int]) -> str:
     return ", ".join(out)
 
 
+def live_restrict(r: dict, first: int = 0, last: int | None = None) -> dict:
+    """The row over its LIVE episodes: index >= `first` and progress > 0.00.
+
+    A dead episode is one the arm never started (section 10.3a) — a harness
+    artefact whose rate on one checkpoint has been measured anywhere from 1 to 93
+    of 200. Including them in a rate mixes that artefact into the policy's number,
+    and the mixture is not constant across rows, so it cannot be corrected for
+    afterwards. The live slice is what the policy was actually asked to do."""
+    eps = [
+        e for e in r["episodes"]
+        if e["episode"] >= first
+        and (last is None or e["episode"] <= last)
+        and not (not e["success"] and e["progress"] <= DEAD_PROGRESS)
+    ]
+    n = len(eps)
+    succ = [e for e in eps if e["success"]]
+    out = dict(r)
+    out.update(
+        {
+            "episodes": eps,
+            "n": n,
+            "n_success": len(succ),
+            "success_rate": (len(succ) / n) if n else 0.0,
+            "ci95": clopper_pearson(len(succ), n),
+            "milestone_rates": [
+                (sum(1 for e in eps if e["reached"] >= k) / n if n else 0.0)
+                for k in range(1, len(MILESTONES) + 1)
+            ],
+            "progress_mean": (sum(e["progress"] for e in eps) / n) if n else 0.0,
+            "steps_to_success": [e["length"] for e in succ],
+            "median_steps": statistics.median([e["length"] for e in succ]) if succ else None,
+            "first_episode": first,
+        }
+    )
+    return out
+
+
+def live_table(entries: list[tuple[str, dict]], held_out_from: int = 20) -> str:
+    """The verdict table: live episodes of the held-out slice, with the all-200
+    mixture kept beside it and labelled, never in its place."""
+    header = [
+        f"row (live episodes of {held_out_from}–199)",
+        "successes / live",
+        "live rate",
+        "exact 95 % CI on the live rate",
+        "dead (excluded)",
+        "all episodes run (mixture, for reference)",
+    ]
+    rows = []
+    for label, r in entries:
+        lv = live_restrict(r, held_out_from)
+        held = restrict(r, held_out_from)
+        dead = len(held["episodes"]) - lv["n"]
+        rows.append(
+            [
+                label,
+                f"**{lv['n_success']}/{lv['n']}**",
+                f"**{100 * lv['success_rate']:.0f} %**" if lv["n"] else "n/a",
+                ci_text(lv) if lv["n"] else "n/a",
+                str(dead),
+                f"{r['n_success']}/{r['n']} = {100 * r['success_rate']:.1f} %",
+            ]
+        )
+    return md_table(header, rows)
+
+
+def segment_table(entries: list[tuple[str, dict, int, int]]) -> str:
+    """One row per regime segment of a bistable run, with its own live rate.
+
+    A run that flips between regimes has no single rate: 104/200 is a mixture of
+    the segments below in the proportions this particular run happened to spend in
+    them, and those proportions are not a property of the checkpoint."""
+    header = ["segment (episodes)", "successes / live", "live rate", "exact 95 % CI",
+              "dead", "all in segment", "outcome string"]
+    rows = []
+    for label, r, first, last in entries:
+        lv = live_restrict(r, first, last)
+        allseg = restrict(r, first, last + 1)
+        rows.append(
+            [
+                label,
+                f"**{lv['n_success']}/{lv['n']}**",
+                f"**{100 * lv['success_rate']:.0f} %**" if lv["n"] else "n/a",
+                ci_text(lv) if lv["n"] else "n/a",
+                str(allseg["n"] - lv["n"]),
+                f"{allseg['n_success']}/{allseg['n']}",
+                f"`{ep_marks(allseg, 60)}`",
+            ]
+        )
+    return md_table(header, rows)
+
+
 def artefact_table(entries: list[tuple[str, dict]], held_out_from: int = 20) -> str:
     """Every row with its dead-episode count and positions and its outcome string.
 
@@ -1616,14 +1708,18 @@ def r3_verdict(
     lanes: list[tuple[str, dict | None, dict | None]],
     held_out_from: int = 20,
     reran: bool = False,
+    mixtures: frozenset = frozenset(),
 ) -> str:
-    """The round-2 vs round-3 verdict, per lane, stated on the held-out slice.
+    """The round-2 vs round-3 verdict, per lane, on the LIVE episodes of the
+    held-out slice.
 
-    The 21:05 rule: the dead-episode artefact concentrates in a run's first
-    episodes, so the sentence that decides the round is the one over episodes
-    `held_out_from`-199, with the all-200 rate shown next to it rather than
-    hidden. Both numbers come out of the same csv; neither is a correction of
-    the other."""
+    Three exclusions decide this sentence and each was measured, not assumed.
+    Episodes 0-`held_out_from` are the screens' selection set. Dead episodes are a
+    harness artefact whose rate on one checkpoint ranged from 1 to 93 of 200 here,
+    so an all-200 rate is a policy rate plus an artefact rate in an unknown and
+    non-constant mixture. And a row that flipped regime mid-run is a mixture of
+    segments in whatever proportion that run happened to visit them, so it gets no
+    single rate at all — it is named as a mixture and sent to the segment table."""
     bits = []
     for short, r2, r3 in lanes:
         if r3 is None or r2 is None:
@@ -1633,33 +1729,48 @@ def r3_verdict(
                 + "has not been passed to this report."
             )
             continue
-        h2, h3 = restrict(r2, held_out_from), restrict(r3, held_out_from)
-        delta = 100 * (h3["success_rate"] - h2["success_rate"])
+        mixed = [
+            lbl for lbl, r in (("round 3", r3), ("round 2", r2))
+            if str(r["dir"]) in mixtures
+        ]
+        l2, l3 = live_restrict(r2, held_out_from), live_restrict(r3, held_out_from)
+        head = (
+            f"**{short}** — round 3 {l3['n_success']}/{l3['n']} = "
+            f"{100 * l3['success_rate']:.0f} % of its live held-out episodes "
+            f"({ci_text(l3)}) against round 2 {l2['n_success']}/{l2['n']} = "
+            f"{100 * l2['success_rate']:.0f} % ({ci_text(l2)})"
+        )
+        if mixed:
+            bits.append(
+                head + f". **No gap is claimed for {short}: its {' and '.join(mixed)} row is a "
+                "mixture of regimes** (10.3c), so neither its rate nor any difference "
+                "computed from it is a property of the checkpoint. The segments are given "
+                "separately and the reproducible row is named in 10.4."
+            )
+            continue
+        delta = 100 * (l3["success_rate"] - l2["success_rate"])
         word = "gains" if delta > 0 else ("loses" if delta < 0 else "is unchanged by")
-        sep = "do not overlap" if not overlap(h2["ci95"], h3["ci95"]) else "overlap"
+        sep = "do not overlap" if not overlap(l2["ci95"], l3["ci95"]) else "overlap"
         bits.append(
-            f"**{short}** {word} {abs(delta):.1f} points from the warm restart: round 3 "
-            f"{count_text(h3)} = {100 * h3['success_rate']:.1f} % ({ci_text(h3)}) against "
-            f"round 2 {count_text(h2)} = {100 * h2['success_rate']:.1f} % ({ci_text(h2)}) on "
-            f"episodes {held_out_from}–199, and the exact intervals **{sep}**. Over all 200 "
-            f"episodes the same two rows are {count_text(r3)} = "
-            f"{100 * r3['success_rate']:.1f} % and {count_text(r2)} = "
-            f"{100 * r2['success_rate']:.1f} %."
+            head + f" — it {word} {abs(delta):.0f} points, and the exact intervals "
+            f"**{sep}**, so this n {'does' if sep.startswith('do not') else 'does not'} "
+            "separate the two rounds. Over all episodes run, artefact included, the same "
+            f"two rows are {r3['n_success']}/{r3['n']} and {r2['n_success']}/{r2['n']}."
         )
     lead = (
-        "Round 2's side of each comparison is its headline checkpoint **re-measured** under "
-        "this round's evaluation (same seeded server, same load, same day), not its original "
-        f"P10 row — see {'the appendix' if reran else 'section 10.4'} for the originals. "
+        "Round 2's side of each comparison is its headline checkpoint **re-measured** "
+        "concurrently with round 3's rows — same binding, same seed, same node, same hours "
+        "— not its original P10 row; the originals are kept whole in 10.10. "
         if reran
-        else "Round 2's side of each comparison is its original P10 row; the two rounds were "
-        "therefore measured under different node load, which section 10.3a shows is not a "
-        "neutral difference. "
+        else "Round 2's side of each comparison is its original P10 row, measured under "
+        "different node load, which 10.3a shows is not a neutral difference. "
     )
     return (
         lead
-        + f"The verdict is read on episodes {held_out_from}–199, the slice held out from the "
-        "checkpoint choice **and** the slice after the window where the artefact "
-        "concentrates; the all-200 rate follows it in every case. "
+        + f"The verdict is read on the **live** episodes of the {held_out_from}–199 slice: "
+        "held out from the checkpoint choice, and with the dead episodes excluded rather "
+        "than averaged in. The all-episode mixture follows each statement and is in the "
+        "tables above with its dead count. "
         + " ".join(bits)
     )
 
@@ -2098,6 +2209,8 @@ def build(
     r2_reruns: dict[str, Path] | None = None,
     artefact_runs: list[tuple[str, Path]] | None = None,
     stopped_runs: list[tuple[str, Path]] | None = None,
+    segments: list[tuple[str, Path, int, int]] | None = None,
+    mixtures: list[Path] | None = None,
 ) -> str:
     rows = rows or {}
     results: dict[str, dict] = {}
@@ -2326,6 +2439,8 @@ def build(
 
     artefact_entries = [(lbl, load_eval(p)) for lbl, p in (artefact_runs or [])]
     stopped_entries = [(lbl, load_eval(p)) for lbl, p in (stopped_runs or [])]
+    segment_entries = [(lbl, load_eval(p), a, b) for lbl, p, a, b in (segments or [])]
+    mixture_dirs = frozenset(str(Path(p).expanduser().resolve()) for p in (mixtures or []))
 
     compare_entries = (
         [(r2_compare_label("lane A", "lane_a", ra), r2_cmp["lane_a"], oa)]
@@ -2670,6 +2785,18 @@ def build(
             [("Lane A", r2_cmp["lane_a"], r3a), ("Lane B", r2_cmp["lane_b"], r3b)],
             held_out_from,
             reran,
+            mixture_dirs,
+        ),
+        "R3_LIVE_TABLE": live_table(
+            r3_row_entries
+            + [(r2_compare_label("lane A", "lane_a", ra), r2_cmp["lane_a"]),
+               (r2_compare_label("lane B", "lane_b", rb), r2_cmp["lane_b"])],
+            held_out_from,
+        ),
+        "R3_REGIME_TABLE": (
+            segment_table(segment_entries)
+            if segment_entries
+            else "_No row in this report was segmented: none was passed with `--r3-segment`._"
         ),
         "R3_ARTEFACT_TABLE": (
             validation_table(artefact_entries)
@@ -2848,6 +2975,15 @@ def main(argv: list[str] | None = None) -> int:
              "comparison table; the original P10 row moves to the appendix",
     )
     ap.add_argument(
+        "--r3-segment", action="append", default=[], metavar="LABEL=RUN:FIRST-LAST",
+        help="one regime segment of a bistable row (inclusive episode range); repeatable",
+    )
+    ap.add_argument(
+        "--r3-mixture", action="append", default=[], metavar="RUN",
+        help="a row whose rate is a mixture of regimes: it keeps its place in every table "
+             "but the verdict sentence refuses to compute a gap from it",
+    )
+    ap.add_argument(
         "--r3-stopped", action="append", default=[], metavar="LABEL=RUN",
         help="a 200-rollout row that was stopped before finishing; repeatable. Reported in "
              "its own table, never in the rows table, and never ranked",
@@ -2900,6 +3036,21 @@ def main(argv: list[str] | None = None) -> int:
 
     artefact_runs = labelled(args.artefact_run, "--artefact-run")
     stopped_runs = labelled(args.r3_stopped, "--r3-stopped")
+    segments: list[tuple[str, Path, int, int]] = []
+    for spec in args.r3_segment:
+        if "=" not in spec or ":" not in spec:
+            raise SystemExit(f"[aggregate] --r3-segment wants LABEL=RUN:FIRST-LAST, got {spec!r}")
+        label, _sep, rest = spec.partition("=")
+        run, _c, span = rest.rpartition(":")
+        try:
+            first, last = (int(x) for x in span.split("-", 1))
+        except ValueError:
+            raise SystemExit(f"[aggregate] --r3-segment span must be FIRST-LAST, got {span!r}")
+        rp = Path(run.strip()).expanduser().resolve()
+        if not (rp / "out" / "eval" / "eval_results.csv").is_file():
+            raise SystemExit(f"[aggregate] --r3-segment {label}: {rp} has no out/eval/eval_results.csv")
+        segments.append((label.strip(), rp, first, last))
+    mixtures = [Path(m).expanduser().resolve() for m in args.r3_mixture]
     text = build(
         rows=rows,
         held_out_from=args.held_out_from,
@@ -2908,6 +3059,8 @@ def main(argv: list[str] | None = None) -> int:
         r2_reruns=r2_reruns,
         artefact_runs=artefact_runs,
         stopped_runs=stopped_runs,
+        segments=segments,
+        mixtures=mixtures,
     )
     if args.stdout:
         sys.stdout.write(text)
