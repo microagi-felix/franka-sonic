@@ -539,6 +539,9 @@ ROUND2_TRAIN_STEPS = 20000
 # another 20 000 steps, so the step budget does NOT tell the two rounds apart.
 ROUND3_TRAIN_STEPS = 20000
 SCREEN_ROLLOUTS = 20
+# A full 200-rollout row. Only a fallback: every row's own config.json stamps the
+# `--rollouts` it was launched with, and that stamp is what `row_rollouts()` reads.
+ROW_ROLLOUTS = 200
 ROW_MIN_ROLLOUTS = 100
 BASE_MODEL_RE = re.compile(r"--base-model-path[=\s]+(\S+)")
 
@@ -670,6 +673,42 @@ def rank_key(r: dict) -> tuple:
     checkpoint-5000 had the highest mean progress of its lane with zero
     successes (the place-at-centre-and-stall mode)."""
     return (r["n_success"], r["milestone_rates"][5], r["milestone_rates"][4], r["step"])
+
+
+def row_checkpoint(r: dict) -> Path | None:
+    """The checkpoint directory a row measured, read from that row's OWN bakeoff
+    stamp (`config.json` -> `args.checkpoint`). Never guessed from the folder's
+    name or its age: that is harness debt (c), the newest-wins trap, and it has
+    already mis-filed one screen and one GPU-hour sum in this campaign."""
+    ck = str(((r["cfg"] or {}).get("args") or {}).get("checkpoint") or "")
+    return Path(ck) if ck else None
+
+
+def row_step(r: dict) -> int | None:
+    """The fine-tune step of the checkpoint a row measured, from the same stamp."""
+    m = re.search(r"checkpoint-(\d+)", str(row_checkpoint(r) or ""))
+    return int(m.group(1)) if m else None
+
+
+def row_seed(r: dict) -> str | None:
+    """The policy server's seed for a row, from its stamp, falling back to the
+    `--seed` its own `cmd.sh` carries. `None` means the row is unseeded."""
+    seed = ((r["cfg"] or {}).get("args") or {}).get("server_seed")
+    if seed not in (None, "", 0):
+        return str(seed)
+    cmd = (r["dir"] / "cmd.sh").read_text(errors="replace") if (r["dir"] / "cmd.sh").is_file() else ""
+    m = re.search(r"--seed (\d+)", cmd)
+    return m.group(1) if m else None
+
+
+def row_rollouts(r: dict, default: int = ROW_ROLLOUTS) -> int:
+    """How many rollouts the row was launched to run, from its own stamp — the
+    denominator that says whether a row is finished or still in flight."""
+    n = ((r["cfg"] or {}).get("args") or {}).get("rollouts")
+    try:
+        return int(n) if n else default
+    except (TypeError, ValueError):
+        return default
 
 
 def restrict(r: dict, first: int, last: int | None = None) -> dict:
@@ -2376,10 +2415,6 @@ def build(
         lane: (max(screens[lane].values(), key=rank_key)["step"] if screens[lane] else None)
         for lane in screens
     }
-
-    def row_step(r: dict) -> int | None:
-        m = re.search(r"checkpoint-(\d+)", str(((r["cfg"] or {}).get("args") or {}).get("checkpoint") or ""))
-        return int(m.group(1)) if m else None
 
     lane_entries: dict[str, list[tuple[str, dict]]] = {}
     for lane, short in (("lane_a", "lane A"), ("lane_b", "lane B")):
