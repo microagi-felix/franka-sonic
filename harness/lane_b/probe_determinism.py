@@ -311,6 +311,46 @@ def compare(args) -> int:
         md += [f"| `{d['file']}` | {fmt(d['max_abs_delta'])} | {fmt(d['max_abs_delta_token'])} |"
                for d in l["differing"]]
         md.append("")
+    # The sampler's own spread, as a distribution rather than a single max: on the
+    # captures seen so far the max is the typical case, not a tail, and a reader who
+    # sees only "1.9375" will discount it as one outlier element of one chunk.
+    per_req = sorted(d for _t, j, _c in allp for r in j.get("requests", [])
+                     if (d := r.get("free_running_max_abs_delta")) is not None)
+    if per_req:
+        def pct(p):
+            return per_req[min(len(per_req) - 1, int(p * len(per_req)))]
+        below = sum(1 for d in per_req if d < SUBGRID)
+        md += ["## The sampler's own spread (free-running repeats)", "",
+               f"Per-request max |dchunk| between two draws of the SAME request with the RNG left "
+               f"alone, over {len(per_req)} request-passes: min {per_req[0]:.4f}, p10 {pct(0.10):.4f}, "
+               f"median {pct(0.50):.4f}, p90 {pct(0.90):.4f}, max {per_req[-1]:.4f}. "
+               f"{below} of {len(per_req)} are below the sub-grid threshold {SUBGRID:.5f}.",
+               "",
+               "This is the flow-matching action head sampling from fresh noise, not a determinism "
+               "failure: every *reseeded* repeat above is bit-identical. It is reported here because "
+               "it bounds how much of any single rollout is the draw rather than the policy — and on "
+               "this capture the spread is full-scale for essentially every request, so two rollouts "
+               "of one checkpoint never see the same action sequence. What that does or does not do "
+               "to a rollout's outcome is not measured here.",
+               ""]
+
+    # What the replayed requests actually cover.
+    eps = sorted({e for _t, j, _c in allp for r in j.get("requests", [])
+                  if (e := r.get("episode")) is not None})
+    n_req = sorted({j["n_requests"] for _t, j, _c in allp})
+    replans = sorted({r.get("request") for _t, j, _c in allp for r in j.get("requests", [])
+                      if r.get("replanned_here")})
+    md += ["## Coverage", "",
+           f"* Requests replayed per pass: {', '.join(str(n) for n in n_req)}; capture episode(s): "
+           f"{', '.join(str(e) for e in eps) if eps else 'not recorded'}; "
+           f"replan boundaries inside the slice: {len(replans)}.",
+           "* The server writes one file per `act` request and the evaluation client asks at every "
+           "simulator step, so a 400-request dump is ~400 steps of ONE episode, not the five "
+           "episodes WP 12.3 estimated. Determinism is therefore established on a slice of one "
+           "episode's trajectory in one regime, replayed identically in six processes — not across "
+           "episodes, and not across a regime flip.",
+           ""]
+
     md += ["## What this does and does not settle", "",
            "The probe covers the policy function only: GR00T's forward and the token chunk it",
            "returns. Bit-reproducibility here puts the P11 bistable regime *outside* the policy",
