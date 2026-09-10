@@ -1410,3 +1410,4 @@ P11 BEST lane_b=/tmp/franka-sonic/lane_b/2026-09-05_finetune-2/out/checkpoints/c
 - 2026-09-06 02:10  GATE P11: PASS (0 warnings)
     Union datasets 1855 = 1855 episodes (lane A `shared/2026-09-05_dataset/out/gr00t_v2`, lane B `lane_b/2026-09-05_label_tokens/out/gr00t_v2_sonic`); both `P11 INIT` warm starts verified; 10 + 9 post-epoch checkpoint dirs; 13 + 33 post-epoch screens (8 per lane in the selection series, the rest controls and re-screens); 3 + 3 rows at 200 rollouts on post-epoch checkpoints; both `P11 BEST` lines resolve to real directories newer than the epoch; eval-box B-oracle 200 rows; `plan/REPORT.md` regenerated 02:07, newer than the newest post-epoch eval csv. Command: `bash harness/gates/p11.sh`, rc=0, 15 checks, 0 warnings, no override used.
 - 2026-09-06 02:09  DRIVER: all phases passed
+- 2026-09-10 14:28  DRIVER: start (pid 1335515, model claude-opus-5, effort max, logs /tmp/franka-sonic/driver/2026-09-10)
