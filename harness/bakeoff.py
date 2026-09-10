@@ -945,6 +945,11 @@ def stage_eval(run: Run) -> int:
     # run-to-run spread (lane B checkpoint-10000: 16/20, 185/200, 7/20) is the unseeded sampler.
     if getattr(run.args, "server_seed", None) is not None:
         server_cmd += ["--seed", str(run.args.server_seed)]
+    # P12 WP 12.3 (2026-09-10): opt-in capture of the first N act requests into this run folder,
+    # so the determinism probe can replay real observations through the policy function alone.
+    if getattr(run.args, "dump_requests", False):
+        server_cmd += ["--dump-requests", str(run.dir / "out" / "requests"),
+                       "--dump-n", str(run.args.dump_n)]
     eval_extra = ["--endpoint", f"tcp://127.0.0.1:{port}", "--grip-threshold", "0.5"]
     # P11 (2026-09-05): the stale-first-observation fix, opt-in so every round-1/2/3 run stays
     # comparable unless the flag is passed. See evaluation/eval.py:_refresh_first_observation.
@@ -1627,6 +1632,12 @@ def main(argv=None) -> int:
                         "first image is its own and not the previous episode's last frame "
                         "(Isaac Lab's num_rerenders_on_reset defaults to 0). Off by default — "
                         "rounds 1-3 ran without it")
+    r.add_argument("--dump-requests", action="store_true",
+                   help="eval: have the policy server write its first --dump-n 'act' requests to "
+                        "<run>/out/requests as request_<k>.npz (P12 WP 12.3, feeds "
+                        "harness/lane_b/probe_determinism.py). Off by default")
+    r.add_argument("--dump-n", type=int, default=400,
+                   help="eval: how many requests --dump-requests captures (400 ~ five episodes)")
     r.add_argument("--sonic-overrides", default="",
                    help="lane_b sonic_rl/export_onnx/decoder_replay: extra Hydra overrides appended "
                         "to the gear_sonic command, e.g. '++manager_env.config.robot.type=dual_fr3_stiff'")
