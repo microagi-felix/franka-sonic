@@ -3653,11 +3653,32 @@ def round3b_section(
             step: pool_evals([dict(s, step=step) for _l, s in ents])
             for step, ents in scr_groups.items()
         }
-        ordered = sorted(scr_groups.items(), key=lambda kv: rank_key(pooled[kv[0]]), reverse=True)
+        # A checkpoint whose second screen has not finished cannot be ranked against one
+        # whose has: the rule's first key is successes summed over BOTH screens, so 3/20
+        # is not comparable with 0/40. Rankable pools sort first, unrankable ones below —
+        # otherwise "best first" and the pick sentence (which restricts to complete pools,
+        # correctly) name different checkpoints while a series is still filling in.
+        def rankable(step: int) -> bool:
+            return pooled[step]["n"] == 2 * SCREEN_ROLLOUTS
+
+        ordered = sorted(
+            scr_groups.items(),
+            key=lambda kv: (rankable(kv[0]), rank_key(pooled[kv[0]])),
+            reverse=True,
+        )
+        n_partial = sum(1 for step in pooled if not rankable(step))
         out += [
             "**The screen series.** Two 20-rollout screens per checkpoint, ranked by the "
             "pre-registered rule with its first key summed over the two: **(successes summed over "
-            "both screens, milestone-6 rate, milestone-5 rate, step)**. Best first.",
+            "both screens, milestone-6 rate, milestone-5 rate, step)**. Best first."
+            + (
+                f" {fmt_int(n_partial)} checkpoint(s) still have a screen running; a half-filled "
+                "pool cannot be ranked against a full one under a rule that sums successes over "
+                "both screens, so they are listed after the ranked ones and the pick sentence "
+                "below ignores them."
+                if n_partial
+                else ""
+            ),
             "",
             r3b_screen_table([(step, ents, pooled[step]) for step, ents in ordered], live),
             "",
