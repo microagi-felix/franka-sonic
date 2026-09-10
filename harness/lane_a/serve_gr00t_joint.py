@@ -217,6 +217,16 @@ class JointPolicyServer:
         # draws — measured spread on lane B checkpoint-10000: 16/20, 185/200, 7/20. --seed is
         # OFF by default, so the evaluation binding is unchanged unless it is passed.
         self.seed = getattr(args, "seed", None)
+        # P12 (2026-09-10): opt-in capture of the first --dump-n 'act' requests, so the WP 12.3
+        # determinism probe can replay real observations through the policy function outside the
+        # simulator. OFF unless --dump-requests is passed; nothing else changes.
+        self.dump_dir = None
+        self.dump_n = int(getattr(args, "dump_n", 0) or 0)
+        self._dumped = 0
+        if getattr(args, "dump_requests", None):
+            self.dump_dir = Path(args.dump_requests).expanduser()
+            self.dump_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[serve] dumping the first {self.dump_n} act requests to {self.dump_dir}", flush=True)
         self._seed_rngs("startup")
 
     def _seed_rngs(self, why: str) -> None:
@@ -327,6 +337,43 @@ class JointPolicyServer:
                 flush=True,
             )
 
+    def _dump_request(self, request: dict, action: np.ndarray) -> None:
+        """P12 WP 12.3: save one 'act' request verbatim beside the row it produced.
+
+        `request_<k>.npz` holds the wire state16 and the three camera frames exactly as they
+        arrived (no resize — the probe applies the server's own build_observation), the reply
+        row, the chunk the row came from (lane A (40,16) joint targets, lane B (40,66)
+        [token|grips]) and the bookkeeping that identifies the request: episode, request index,
+        the index of the row inside the chunk and whether this request replanned. Off unless
+        --dump-requests was passed; the first --dump-n requests of the process only.
+        """
+        if self.dump_dir is None or self._dumped >= self.dump_n:
+            return
+        k = self._dumped
+        payload = {
+            "state": np.asarray(request["state"], dtype=np.float32).reshape(-1),
+            "action": np.asarray(action, dtype=np.float32).reshape(-1),
+            "episode": np.int64(self.episode),
+            "request": np.int64(self.requests),
+            "step_in_chunk": np.int64(self.step_in_chunk),
+            "replans": np.int64(self.replans),
+            "replanned_here": np.bool_(self.step_in_chunk == 1),
+        }
+        if self.chunk is not None:
+            payload["chunk"] = np.asarray(self.chunk, dtype=np.float32)
+        for camera in CAMERAS:
+            if camera in request:
+                payload[camera] = np.ascontiguousarray(request[camera])
+        try:
+            np.savez(self.dump_dir / f"request_{k:04d}.npz", **payload)
+        except Exception as exc:  # noqa: BLE001 - a probe capture never takes the server down
+            print(f"[serve] dump of request {k} failed: {type(exc).__name__}: {exc}", flush=True)
+            self.dump_dir = None
+            return
+        self._dumped += 1
+        if self._dumped == self.dump_n:
+            print(f"[serve] DUMP_DONE {self._dumped} requests in {self.dump_dir}", flush=True)
+
     # ---------------------------------------------------------------- handlers
 
     def handle(self, request: dict) -> dict:
@@ -347,6 +394,7 @@ class JointPolicyServer:
             self.requests += 1
             action = self._next_row(request)
             self._track_first_chunk(request, action)
+            self._dump_request(request, action)
             if self.args.log_every and self.requests % self.args.log_every == 0:
                 print(
                     f"[serve] heartbeat requests={self.requests} replans={self.replans} "
@@ -438,6 +486,18 @@ def build_parser() -> argparse.ArgumentParser:
              "keeps the evaluation binding exactly as it was. Pass it to test whether the "
              "run-to-run spread measured in P11 (one lane-B checkpoint scoring 16/20, "
              "185/200 and 7/20) is the unseeded action sampler.",
+    )
+    parser.add_argument(
+        "--dump-requests", default=None,
+        help="P12 WP 12.3: directory the first --dump-n 'act' requests are written to as "
+             "request_<k>.npz (wire state16 + the three frames verbatim, the reply row and the "
+             "chunk they came from). OFF by default, so the evaluation binding is unchanged "
+             "unless it is passed. Feeds harness/lane_b/probe_determinism.py.",
+    )
+    parser.add_argument(
+        "--dump-n", type=int, default=400,
+        help="how many act requests --dump-requests captures (400 ~ five episodes at 50 Hz); "
+             "ignored unless --dump-requests is given",
     )
     return parser
 
