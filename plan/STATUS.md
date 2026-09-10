@@ -1513,3 +1513,7 @@ P12 PROBE=/tmp/franka-sonic/lane_b/2026-09-10_probe/out/probe.md
 
     The three classes are indistinguishable — if anything the dead episodes are marginally *faster*. **Stated precisely, because the measure only covers half the question:** replan latency is the policy server's own inference time, i.e. a **GPU-contention** proxy, so this rules out GPU-side contention as the per-episode trigger. The CPU-side proxy — the simulator's step time — is **not recorded per episode by any run in this campaign**, which is a new harness debt **(k)** and the thing to instrument first if anyone returns to the artefact. (The replan counts are a sanity check on the parse, not a finding: 75/ep is a 1500-step episode at replan 20, so the dead and live-failure episodes ran the full horizon and the successes terminated early.)
     Both scripts are read-only and interpret nothing beyond what they print. Neither changes any number already published; both go into the report's round-3b section as `--r3b-note` paragraphs.
+- 2026-09-10 16:36  DRIVER: usage-limit pause 1800s before re-running P12 attempt 1 (pause 3)
+- 2026-09-10 16:49  bakeoff lane_b/eval OK  rc=0  gpus=7  run=/tmp/franka-sonic/lane_b/2026-09-10_eval
+- 2026-09-10 16:50  bakeoff lane_b/eval OK  rc=0  gpus=6  run=/tmp/franka-sonic/lane_b/2026-09-10_eval-2
+- 2026-09-10 16:56  bakeoff lane_a/eval OK  rc=0  gpus=0  run=/tmp/franka-sonic/lane_a/2026-09-10_eval-5
