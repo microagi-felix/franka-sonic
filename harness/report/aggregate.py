@@ -558,14 +558,35 @@ def finetune_round(p: Path) -> int | None:
     fine-tunes the published base model from a Hugging Face hub id
     (`nvidia/GR00T-N1.7-3B`); round 3 warm-restarts from an absolute path to a
     local `checkpoint-N` directory of round 2's own output. A value that is not
-    an absolute filesystem path is a hub id."""
+    an absolute filesystem path is a hub id.
+
+    Round 3b (P12) warm-restarts from round 3's own `checkpoint-20000`, so "starts
+    from a local path" no longer identifies round 3 by itself. The rule is therefore
+    recursive on the lineage the folder records: a hub id is round 2, and anything
+    else is one round after the fine-tune that produced the checkpoint it started
+    from (so round 3b reports as round 4 and can never be returned by
+    `finetune_dirs(..., round_=3)`). `_seen` breaks a cycle if two folders ever
+    point at each other; an unresolvable parent falls back to the old answer, 3."""
+    return _finetune_round(p, frozenset())
+
+
+def _finetune_round(p: Path, _seen: frozenset) -> int | None:
     cmd = p / "cmd.sh"
-    if not cmd.is_file():
+    if not cmd.is_file() or str(p) in _seen:
         return None
     m = BASE_MODEL_RE.search(re.sub(r"\\\n\s*", " ", cmd.read_text(errors="replace")))
     if not m:
         return None
-    return 3 if m.group(1).startswith(("/", "~")) else 2
+    base = m.group(1)
+    if not base.startswith(("/", "~")):
+        return 2
+    ck = Path(base).expanduser()
+    # <run folder>/out/checkpoints/checkpoint-N -> <run folder>
+    parent_run = ck.parents[2] if len(ck.parents) >= 3 and ck.parent.name == "checkpoints" else None
+    if parent_run is None:
+        return 3
+    parent_round = _finetune_round(parent_run, _seen | {str(p)})
+    return 3 if parent_round is None else parent_round + 1
 
 
 def folder_end(p: Path) -> dt.datetime:
@@ -2318,6 +2339,13 @@ def build(
     mixtures: list[Path] | None = None,
     screens_until: dt.datetime | None = None,
     rescreens: list[tuple[str, Path]] | None = None,
+    r3b_rows: list[tuple[str, Path]] | None = None,
+    r3b_screens: list[tuple[str, Path]] | None = None,
+    r3b_segments: list[tuple[str, Path, int, int]] | None = None,
+    r3b_ext_ft: Path | None = None,
+    r3b_r3_ft: Path | None = None,
+    r3b_probe: Path | None = None,
+    r3b_notes: list[str] | None = None,
 ) -> str:
     rows = rows or {}
     results: dict[str, dict] = {}
@@ -2989,7 +3017,805 @@ def build(
         raise SystemExit(f"[aggregate] template placeholders without a value: {leftover}")
     if verbose and unused:
         print(f"[aggregate] note: unused substitutions {sorted(unused)}", file=sys.stderr)
+
+    # Round 3b (P12), appended after every substitution so that section 1-13 of the
+    # report are byte-identical to the run before this section existed. It renders
+    # nothing at all unless a --r3b-* flag supplied something.
+    r3b_row_entries = [(lbl, load_eval(p)) for lbl, p in (r3b_rows or [])]
+    r3b_screen_entries = [(lbl, load_eval(p)) for lbl, p in (r3b_screens or [])]
+    r3b_segment_entries = [(lbl, load_eval(p), a, b) for lbl, p, a, b in (r3b_segments or [])]
+    r3b_head = [
+        (f"{short} round 3 `checkpoint-{r['step']}`", r)
+        for lane, short in (("lane_a", "lane A"), ("lane_b", "lane B"))
+        for r in r3_lane_rows[lane][:1]
+    ]
+    r3b_live = frozenset(
+        str(p) for _lbl, p in list(r3b_rows or []) + list(r3b_screens or [])
+        if is_live(p, p.parent.name, claims_now)
+    )
+    if verbose and (r3b_row_entries or r3b_screen_entries or r3b_probe or r3b_ext_ft):
+        print(
+            f"[aggregate] round 3b: {len(r3b_row_entries)} row(s), {len(r3b_screen_entries)} screen(s), "
+            f"{len(r3b_segment_entries)} segment(s), extension {r3b_ext_ft}, probe {r3b_probe}",
+            file=sys.stderr,
+        )
+    section_3b = round3b_section(
+        r3b_row_entries,
+        r3b_screen_entries,
+        r3b_segment_entries,
+        r3b_head,
+        ext_ft=r3b_ext_ft,
+        r3_ft=r3b_r3_ft,
+        probe=r3b_probe,
+        notes=list(r3b_notes or []),
+        held_out_from=held_out_from,
+        mixtures=frozenset(str(p) for p in (mixtures or [])),
+        live=r3b_live,
+    )
+    if section_3b:
+        text = text.rstrip("\n") + "\n\n" + section_3b.rstrip("\n") + "\n"
     return text
+
+
+# --------------------------------------------------------------------------- round 3b (P12)
+# Round 3b re-measures round 3's headline checkpoints CONCURRENTLY under two
+# server seeds, extends lane A's fine-tune budget by a further 20 000 steps, and
+# probes the policy function for determinism with the simulator taken out.
+#
+# Every input arrives as an explicit path (`--r3b-row`, `--r3b-screen`,
+# `--r3b-segment`, `--r3b-ext-finetune`, `--r3b-r3-finetune`, `--r3b-probe`,
+# `--r3b-note`) and every one of them defaults to empty: a run of this aggregator
+# without a single `--r3b-*` flag renders exactly the report that existed before
+# this section did. Nothing here is resolved by recency -- that is harness debt
+# (c), and it has already mis-filed a screen and two GPU-hour sums in this
+# campaign.
+#
+# Every rate below obeys section 10.3c's three rules: it is over the LIVE
+# episodes (the ones the arm actually started) of the HELD-OUT slice (20-199),
+# with the all-N mixture and the dead count printed beside it; and a row that
+# flips regime mid-run is segmented at its flips instead -- no single rate, no
+# interval, and no gap computed from it.
+
+
+def pool_evals(rs: list[dict]) -> dict:
+    """Several runs of one checkpoint as a single record.
+
+    Their episodes are concatenated and re-indexed and every derived statistic is
+    then recomputed by `restrict()` -- the same code path every other row in this
+    report goes through, so a pooled pair of screens is ranked by exactly the
+    pre-registered rule (`rank_key`) that ranks a single screen."""
+    eps, k = [], 0
+    for r in rs:
+        for e in sorted(r["episodes"], key=lambda e: e["episode"]):
+            eps.append(dict(e, episode=k))
+            k += 1
+    base = dict(rs[0])
+    base["episodes"] = eps
+    out = restrict(base, 0)
+    out["step"] = rs[0].get("step")
+    out["pooled_from"] = [r["dir"] for r in rs]
+    return out
+
+
+def diff_interval(x: dict, y: dict) -> tuple[float, float]:
+    """A 95 % interval for the difference of two rates, square-and-add from the
+    two exact Clopper-Pearson intervals the rows already carry (Newcombe 1998,
+    method 10).
+
+    It is **not** an exact interval for the difference and is never printed as if
+    it were: it is the standard way of carrying two exact intervals into one
+    number. It is computed only where both sides are single-regime rows -- an
+    interval around a difference taken from a regime mixture would be an interval
+    around a quantity that is not a property of any checkpoint."""
+    p1, p2 = x["success_rate"], y["success_rate"]
+    l1, u1 = x["ci95"]
+    l2, u2 = y["ci95"]
+    lo = (p1 - p2) - math.sqrt((p1 - l1) ** 2 + (u2 - p2) ** 2)
+    hi = (p1 - p2) + math.sqrt((u1 - p1) ** 2 + (p2 - l2) ** 2)
+    return (lo, hi)
+
+
+def points_text(lo: float, hi: float) -> str:
+    return f"{100 * lo:+.0f} to {100 * hi:+.0f} points"
+
+
+def steps_text(n: int | None) -> str:
+    """40000 -> `40k`; anything else spelled out. Only for the headline sentence,
+    where "60k vs 40k" is the phrasing the campaign uses for these budgets."""
+    if not n:
+        return NOT_RECORDED
+    return f"{n // 1000}k" if n % 1000 == 0 else fmt_int(n)
+
+
+def flight_text(r: dict, live: frozenset = frozenset(), expect: int | None = None) -> str:
+    """How much of a run is on disk, in the cell that says so.
+
+    A run with fewer episodes than it was launched for is labelled with its count
+    and never padded and never dropped: printing a partial count as if it were
+    the finished thing is what recorded lane A's round-2 `checkpoint-20000` screen
+    as 1/7 where the screen is 16/20 (section 9 item 6)."""
+    want = expect if expect is not None else row_rollouts(r)
+    if r["n"] >= want:
+        return str(r["n"])
+    tail = ", still running" if str(r["dir"]) in live else ""
+    return f"**{r['n']} of {want}** — in flight{tail}"
+
+
+def r3b_row_table(
+    entries: list[tuple[str, dict]],
+    held_out_from: int = 20,
+    live: frozenset = frozenset(),
+    mixed: frozenset = frozenset(),
+) -> str:
+    """One line per 200-rollout run, carrying all of its own evidence: the live
+    held-out rate with its exact interval, the all-N mixture beside it, the dead
+    count, the milestone vector and the per-episode outcome string.
+
+    Sections 10.3a and 10.3c spend three tables on that evidence because round 3
+    has nine rows; round 3b has few enough to carry it in one. A run named as a
+    regime mixture keeps its counts and loses its rate and its interval."""
+    header = [
+        "row",
+        "episodes",
+        f"successes / live ({held_out_from}–199)",
+        "live rate",
+        "exact 95 % CI on the live rate",
+        "dead (excluded)",
+        "all episodes run (mixture, for reference)",
+        "milestones 1…6 (% reached, all episodes)",
+        "outcome string (1 success / z dead / 0 other failure)",
+    ]
+    rows = []
+    for label, r in entries:
+        lv = live_restrict(r, held_out_from)
+        held = restrict(r, held_out_from)
+        dead = len(held["episodes"]) - lv["n"]
+        is_mix = str(r["dir"]) in mixed
+        if lv["n"] == 0:
+            rate, ci = "n/a — no live episode in this slice yet", "—"
+        elif is_mix:
+            rate, ci = "**mixture — see the segments**", "— (no interval on a mixture)"
+        else:
+            rate, ci = f"**{100 * lv['success_rate']:.0f} %**", ci_text(lv)
+        rows.append(
+            [
+                label + (" — **regime mixture**" if is_mix else ""),
+                flight_text(r, live),
+                f"**{lv['n_success']}/{lv['n']}**",
+                rate,
+                ci,
+                str(dead),
+                f"{r['n_success']}/{r['n']} = {100 * r['success_rate']:.1f} %" if r["n"] else "0/0",
+                mvec(r) if r["n"] else "—",
+                f"`{ep_marks(r, 60)}`" if r["n"] else "—",
+            ]
+        )
+    return md_table(header, rows)
+
+
+def r3b_screen_table(
+    groups: list[tuple[int, list[tuple[str, dict]], dict]],
+    live: frozenset = frozenset(),
+) -> str:
+    """Lane A's budget-extension screens: both screens of a checkpoint side by
+    side, and the pooled record the ranking rule actually reads.
+
+    The rule is the pre-registered one with its first key summed over the two
+    screens: (successes summed, milestone-6 rate, milestone-5 rate, step). Two
+    screens per checkpoint exist because one 20-rollout screen has been measured
+    at 7/20 and at 19/20 on identical weights in this campaign (harness debt (f));
+    summing two of them does not turn a screen into a measurement, it only makes
+    the selection less of a coin toss."""
+    header = [
+        "checkpoint",
+        "screen 1",
+        "screen 2",
+        "successes summed (ranking key 1)",
+        "milestone 6 (%) (key 2)",
+        "milestone 5 (%) (key 3)",
+        "milestones 1…6 (% reached, pooled)",
+        "mean progress (pooled)",
+    ]
+    rows = []
+    for step, ents, pooled in groups:
+        cells = []
+        for i in range(2):
+            if i >= len(ents):
+                cells.append("— (only one screen passed)")
+                continue
+            lbl, s = ents[i]
+            cell = f"**{s['n_success']}**/{s['n']}"
+            if s["n"] != SCREEN_ROLLOUTS:
+                cell += f" — only {s['n']} of {SCREEN_ROLLOUTS} rollouts on disk"
+                if str(s["dir"]) in live:
+                    cell += ", still running"
+            cells.append(f"{cell} (`{lbl}`)")
+        extra = f" (pooled over {len(ents)} screens)" if len(ents) > 2 else ""
+        rows.append(
+            [
+                f"`checkpoint-{step}`" if step else "checkpoint not recorded",
+                cells[0],
+                cells[1],
+                f"**{pooled['n_success']}/{pooled['n']}**{extra}",
+                f"{100 * pooled['milestone_rates'][5]:.0f}",
+                f"{100 * pooled['milestone_rates'][4]:.0f}",
+                mvec(pooled),
+                f"{pooled['progress_mean']:.3f}",
+            ]
+        )
+    return md_table(header, rows)
+
+
+# The harness debts, carried forward from the P11 close entry in plan/STATUS.md
+# (2026-09-06, "HARNESS DEBTS STILL OPEN (a-e carried, f-j new)"). Static text on
+# purpose: this aggregator can measure none of them, and re-deriving a debt list
+# from scratch in a new section is how an item quietly goes missing between
+# phases. Anything round 3b adds goes in via --r3b-note, not in here.
+HARNESS_DEBTS = [
+    "(a) `bakeoff.py`'s finalizer does not wait on the trainer python pid, so a detached "
+    "fine-tune's `config.json` stamp is its launch time.",
+    "(b) Action jerk is still not recorded by any run and is left blank rather than estimated.",
+    "(c) Newest-by-recency run resolution is still the standing trap — handled where found "
+    "(`--row` / `--r3-*` / `--r3b-*` in this aggregator, `P10_*` env in the P10 gate, the "
+    "watcher's own launcher-log attribution) but not fixed globally.",
+    "(d) `harness/gates/p10.sh` with default resolution picks each lane's third-place checkpoint.",
+    "(e) The P11 watcher's two fixes (run folder from the launcher log, zombie-reap) live in "
+    "`/tmp/franka-sonic/p11/watcher.py` and not in the repo, so the next campaign will rewrite them.",
+    "(f) **A run is not a clean sample of a checkpoint**: one lane-B checkpoint has been measured "
+    "at 1/20, 2/20, 11/20, 15/20, 16/20 and 19/20 on 20 rollouts and flips regime inside a single "
+    "200-rollout run.",
+    "(g) The dead-episode artefact is characterised but unfixed, and the one candidate fix was "
+    "rejected by its own under-load test (`harness/patches/2026-09-05_fresh_first_obs.patch`, kept "
+    "with the evidence; the upstream working tree still carries the opt-in flag, OFF, unused by "
+    "every row).",
+    "(h) `evaluation/eval.py` has no `--resume`-safe row concept, so a stopped row cannot be "
+    "continued — it can only be re-run from episode 0.",
+    "(i) The allocator's job key is still not unique across run roots.",
+    "(j) `--server-seed` exists and is recorded but does not make a run reproducible (18/20 vs "
+    "19/20 on one seed, 1 of 20 episode lengths equal), so it buys a paired design and nothing more.",
+]
+
+
+def probe_block(probe: Path | None) -> str:
+    """The WP 12.3 determinism probe: its `VERDICT:` line verbatim, and the
+    numbers around it out of the probe's own JSON.
+
+    The verdict is quoted and never paraphrased -- it is the one line the gate
+    greps for. The numbers come from the JSON beside the markdown (same stem, or
+    `probe.json` in the same directory); if that file is not there this says so
+    rather than re-reading the markdown's own rendering of it."""
+    if probe is None:
+        return (
+            "_No determinism probe was passed to this report (`--r3b-probe <file>`), so nothing is "
+            "quoted here. WP 12.3's probe writes one markdown file carrying a `VERDICT:` line and "
+            "one JSON beside it; this sub-section reads both._"
+        )
+    if not probe.is_file():
+        return f"_`--r3b-probe {short_path(probe)}` is not a readable file, so nothing is quoted here._"
+    text = probe.read_text(errors="replace")
+    verdicts = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("VERDICT:")]
+    out = [f"Probe report: `{short_path(probe)}`.", ""]
+    if verdicts:
+        out += ["The probe's verdict line, verbatim:", "", "```", *verdicts, "```", ""]
+    else:
+        out += [
+            "**The probe file carries no `VERDICT:` line.** Nothing is paraphrased in its place; "
+            "the file is named above and is the thing to read.",
+            "",
+        ]
+    cands = [probe.with_suffix(".json"), probe.parent / "probe.json"]
+    js, jp = None, None
+    for c in cands:
+        if c.is_file():
+            js, jp = read_json(c), c
+            break
+    if not js:
+        out.append(
+            "**The probe's JSON is not beside the markdown** (looked for "
+            + " and ".join(f"`{short_path(c)}`" for c in cands)
+            + "), so the numbers behind that verdict are not restated here. The line above is "
+            "quoted, not interpreted."
+        )
+        return "\n".join(out)
+
+    def num(x) -> str:
+        if x is None:
+            return NOT_RECORDED
+        if isinstance(x, bool):
+            return "yes" if x else "**no**"
+        return f"{float(x):.6g}"
+
+    wp = js.get("within_process") or {}
+    q = js.get("across_processes_quiet") or {}
+    ld = js.get("across_processes_under_load") or {}
+    grid = js.get("grid") or {}
+    rows = [
+        ["within one process — every reseeded repeat bitwise-equal", num(wp.get("all_bitwise_equal"))],
+        ["within one process — max abs delta (reseeded repeats)", num(wp.get("max_abs_delta"))],
+        ["within one process — max abs delta (free-running sampler)", num(wp.get("max_free_running_delta"))],
+        ["across fresh processes, quiet — requests compared", num(q.get("n_compared"))],
+        ["across fresh processes, quiet — bitwise-equal", num(q.get("bitwise_equal"))],
+        ["across fresh processes, quiet — max abs delta", num(q.get("max_abs_delta"))],
+        ["across fresh processes, quiet — max abs delta on the token block", num(q.get("max_abs_delta_token"))],
+        ["across processes under load — requests compared", num(ld.get("n_compared"))],
+        ["across processes under load — bitwise-equal", num(ld.get("bitwise_equal"))],
+        ["across processes under load — max abs delta", num(ld.get("max_abs_delta"))],
+        ["across processes under load — max abs delta on the token block", num(ld.get("max_abs_delta_token"))],
+        ["fraction of token values on the 1/16 grid (replayed chunks)", num(grid.get("mean_fraction_on_1_16_grid"))],
+        [
+            "fraction of token values on the 1/16 grid (the chunks the server actually sent)",
+            num(grid.get("mean_fraction_on_1_16_grid_recorded_chunks")),
+        ],
+    ]
+    sub = grid.get("subgrid_threshold")
+    thr = float(sub) if sub is not None else 1.0 / 32
+    out += [
+        f"Numbers from `{short_path(jp)}`:",
+        "",
+        md_table(["quantity", "value"], rows),
+        "",
+        f"**A difference below 1/32 = {thr:.5f} cannot move a token value across a 1/16 grid "
+        "cell**, so any delta in that table smaller than this is a sub-grid perturbation of a "
+        "quantity that is quantised afterwards. That is reported, not interpreted: nothing here "
+        "claims such a perturbation is harmless, and nothing here claims it explains the bistable "
+        "regime — the probe takes the simulator out, so it bounds the policy function and nothing "
+        "downstream of it.",
+    ]
+    return "\n".join(out)
+
+
+def round3b_section(
+    rows: list[tuple[str, dict]],
+    screens: list[tuple[str, dict]],
+    segments: list[tuple[str, dict, int, int]],
+    r3_headline: list[tuple[str, dict]],
+    ext_ft: Path | None = None,
+    r3_ft: Path | None = None,
+    probe: Path | None = None,
+    notes: list[str] | None = None,
+    held_out_from: int = 20,
+    mixtures: frozenset = frozenset(),
+    live: frozenset = frozenset(),
+) -> str:
+    """Section 14 — round 3b (P12). Renders only when a `--r3b-*` flag supplied
+    something; returns "" otherwise, which is what keeps every other section of
+    this report byte-identical to the one before this section existed."""
+    notes = notes or []
+    if not any([rows, screens, segments, ext_ft, r3_ft, probe, notes]):
+        return ""
+    mixed = frozenset(mixtures) | frozenset(str(r["dir"]) for _l, r, _f, _t in segments)
+
+    def lane_of(r: dict) -> str:
+        return str((r["cfg"] or {}).get("lane") or r["dir"].parent.name)
+
+    def short_lane(r: dict) -> str:
+        return {"lane_a": "lane A", "lane_b": "lane B"}.get(lane_of(r), lane_of(r))
+
+    def ck_text(r: dict) -> str:
+        s = row_step(r)
+        return f"`checkpoint-{s}`" if s else "checkpoint not in the stamp"
+
+    def from_ext(r: dict) -> bool:
+        """Is this row measuring a checkpoint of the extension fine-tune? Read out
+        of the row's own `config.json` stamp — not out of its label, and not out
+        of its age."""
+        ck = row_checkpoint(r)
+        if ck is None or ext_ft is None:
+            return False
+        try:
+            ck.relative_to(ext_ft)
+        except ValueError:
+            return False
+        return True
+
+    ext_rows = [(l, r) for l, r in rows if from_ext(r)]
+    seed_rows = [(l, r) for l, r in rows if not from_ext(r)]
+
+    out: list[str] = [
+        "## 14. Round 3b (P12) — the concurrent seeded re-measurement, lane A's budget extension, "
+        "and a determinism probe",
+        "",
+        "Round 3b trains no new comparison. It re-measures round 3's two headline checkpoints "
+        "**at the same time, on one node, under two server seeds**, so that the "
+        "lane-A-against-lane-B difference is read off rows that shared a load instead of rows "
+        "measured hours apart; it extends lane A's fine-tune budget to ask whether that run was "
+        "still improving when round 3's budget ran out; and it probes the policy function for "
+        "determinism with the simulator taken out. Every rate below is over the **live** episodes "
+        f"of the held-out {held_out_from}–199 slice, with the all-N mixture and the dead count "
+        "beside it, exactly as in 10.3c.",
+        "",
+        "### 14.1 The concurrent seeded re-measurement",
+        "",
+    ]
+
+    if not seed_rows:
+        out += [
+            "_No round-3b re-measurement row was passed (`--r3b-row LABEL=<run folder>`), so this "
+            "table is empty; round 3's own rows are in 10.3c._",
+            "",
+        ]
+    else:
+        launched = [r["timing"]["start"] for _l, r in seed_rows if r["timing"]["start"]]
+        when = ""
+        if len(launched) >= 2:
+            spread = (max(launched) - min(launched)).total_seconds()
+            when = (
+                f" All {len(seed_rows)} of them were launched within {spread:.0f} s of each other "
+                f"({fmt_ts(min(launched))}–{fmt_ts(max(launched))} UTC), one device each, so they "
+                "share a node load with each other — which no earlier pair of lane-A and lane-B "
+                "rows in this report can say."
+            )
+        out += [
+            "Round 3b's rows, with round 3's own headline rows for the same weights beside them. "
+            "The round-3 rows are unchanged and are not re-derived here — they are the rows "
+            f"section 10.3c reports.{when}",
+            "",
+            r3b_row_table(
+                seed_rows + [(f"{lbl} (round 3's own measurement)", r) for lbl, r in r3_headline],
+                held_out_from,
+                live,
+                mixed,
+            ),
+            "",
+            seed_sentence([r for _l, r in seed_rows]),
+            "",
+        ]
+    if segments:
+        out += [
+            "Rows that flip regime mid-run are segmented at their flips. A flipping row has no "
+            "single rate: `successes/N` is a mixture of the segments below in whatever proportion "
+            "that particular run happened to visit them, which is a property of the run and not of "
+            "the checkpoint (10.3c).",
+            "",
+            segment_table(list(segments)),
+            "",
+        ]
+    else:
+        out += ["_No round-3b row was segmented: none was passed with `--r3b-segment`._", ""]
+
+    # ---- 14.2 sampler spread and the load-matched gap -----------------------
+    out += ["### 14.2 Sampler spread, and the gap measured at one load", ""]
+    groups: dict[tuple[str, int], list[tuple[str, dict]]] = {}
+    for lbl, r in rows:
+        groups.setdefault((lane_of(r), row_step(r) or 0), []).append((lbl, r))
+
+    def rate_cell(lv: dict) -> str:
+        if lv["n"] == 0:
+            return "n/a — no live held-out episode yet"
+        return f"**{lv['n_success']}/{lv['n']} = {100 * lv['success_rate']:.0f} %** ({ci_text(lv)})"
+
+    spread_rows = []
+    for (_lane, _step), ents in sorted(groups.items()):
+        by_seed: dict[str, list[tuple[str, dict]]] = {}
+        for lbl, r in ents:
+            by_seed.setdefault(row_seed(r) or "unseeded", []).append((lbl, r))
+        keys = sorted(by_seed)
+        for i in range(len(keys)):
+            for j in range(i + 1, len(keys)):
+                l1, r1 = by_seed[keys[i]][0]
+                l2, r2 = by_seed[keys[j]][0]
+                a, b = live_restrict(r1, held_out_from), live_restrict(r2, held_out_from)
+                mix = [l for l, rr in ((l1, r1), (l2, r2)) if str(rr["dir"]) in mixed]
+                if mix:
+                    delta = "not computed — " + ", ".join(f"`{m}`" for m in mix) + " is a regime mixture"
+                elif a["n"] == 0 or b["n"] == 0:
+                    delta = "not computed — the held-out slice is still empty"
+                else:
+                    delta = f"**{100 * (a['success_rate'] - b['success_rate']):+.0f}**"
+                spread_rows.append(
+                    [
+                        f"{short_lane(r1)} {ck_text(r1)}",
+                        f"`{keys[i]}`",
+                        rate_cell(a),
+                        f"`{keys[j]}`",
+                        rate_cell(b),
+                        delta,
+                        f"`{l1}` / `{l2}`",
+                    ]
+                )
+    if spread_rows:
+        out += [
+            "The same weights, the same evaluation, the same node, two server seeds. A seed "
+            "re-seeds `random`, `numpy` and `torch` with `seed + episode index` at every reset; it "
+            "does **not** make a run reproducible (harness debt (j)), so the difference between "
+            "two seeded runs of one checkpoint is a lower bound on how much of any number in this "
+            "report is the sampler rather than the policy.",
+            "",
+            md_table(
+                [
+                    "checkpoint",
+                    "seed",
+                    "live held-out rate",
+                    "other seed",
+                    "live held-out rate",
+                    "difference (points)",
+                    "rows",
+                ],
+                spread_rows,
+            ),
+            "",
+        ]
+    else:
+        out += [
+            "_No checkpoint here was measured under two seeds, so there is no sampler spread to "
+            "report: `--r3b-row` supplied "
+            + (f"{len(rows)} row(s), none of them a second seed of another." if rows else "no rows.")
+            + "_",
+            "",
+        ]
+
+    per_seed: dict[str, dict[str, list[tuple[str, dict]]]] = {}
+    for lbl, r in seed_rows:
+        per_seed.setdefault(row_seed(r) or "unseeded", {}).setdefault(lane_of(r), []).append((lbl, r))
+    gap_bits, excluded = [], []
+    for seed in sorted(per_seed):
+        lanes = per_seed[seed]
+        if "lane_a" not in lanes or "lane_b" not in lanes:
+            gap_bits.append(
+                f"**Seed `{seed}`** — no gap: only "
+                + " and ".join(sorted(lanes))
+                + " has a row at this seed."
+            )
+            continue
+        la_lbl, ra = lanes["lane_a"][0]
+        lb_lbl, rb = lanes["lane_b"][0]
+        mix = [l for l, rr in ((la_lbl, ra), (lb_lbl, rb)) if str(rr["dir"]) in mixed]
+        if mix:
+            excluded += mix
+            gap_bits.append(
+                f"**Seed `{seed}`** — **no gap is computed**: "
+                + ", ".join(f"`{m}`" for m in mix)
+                + " is a regime mixture, so neither its rate nor any difference taken from it is a "
+                "property of a checkpoint. Its segments are in 14.1."
+            )
+            continue
+        x, y = live_restrict(ra, held_out_from), live_restrict(rb, held_out_from)
+        if x["n"] == 0 or y["n"] == 0:
+            gap_bits.append(
+                f"**Seed `{seed}`** — not answerable yet: lane A has {ra['n']} episodes on disk "
+                f"and lane B {rb['n']}, so the held-out {held_out_from}–199 slice holds "
+                f"{x['n']} and {y['n']} live episodes. No rate is quoted off a slice that does not "
+                "exist yet, and nothing is padded to make one."
+            )
+            continue
+        lo, hi = diff_interval(x, y)
+        d = 100 * (x["success_rate"] - y["success_rate"])
+        lead = "lane A leads" if d > 0 else ("lane B leads" if d < 0 else "the two are level")
+        starts = [r["timing"]["start"] for r in (ra, rb) if r["timing"]["start"]]
+        conc = ""
+        if len(starts) == 2:
+            conc = (
+                f" The two were launched {abs((starts[0] - starts[1]).total_seconds()):.0f} s apart "
+                f"({fmt_ts(min(starts))} and {fmt_ts(max(starts))} UTC) and ran concurrently on one "
+                "node, one device each: this difference is measured at one load, which is the one "
+                "thing every lane comparison before section 14 could not say."
+            )
+        gap_bits.append(
+            f"**Seed `{seed}`** — lane A {count_text(x)} = {100 * x['success_rate']:.0f} % "
+            f"({ci_text(x)}) against lane B {count_text(y)} = {100 * y['success_rate']:.0f} % "
+            f"({ci_text(y)}): {lead} by {abs(d):.0f} points, square-and-add 95 % interval on the "
+            f"difference {points_text(lo, hi)}." + conc
+        )
+    if gap_bits:
+        out += [
+            "**The lane gap, at one load.** Computed only from rows that are single-regime: a row "
+            "listed in `--r3-mixture`, or segmented with `--r3b-segment`, is excluded and named "
+            "rather than averaged into a difference."
+            + (
+                " Excluded here: " + ", ".join(f"`{e}`" for e in sorted(set(excluded))) + "."
+                if excluded
+                else " No row in this section is excluded on that ground."
+            ),
+            "",
+            " ".join(gap_bits),
+            "",
+            "The interval on each difference is Newcombe's square-and-add of the two exact "
+            "Clopper–Pearson intervals, not an exact interval for the difference itself. It is "
+            "named so it is not read as more than it is.",
+            "",
+        ]
+    else:
+        out += [
+            "_No lane-A-against-lane-B gap is computed here: `--r3b-row` did not supply a row from "
+            "each lane at one seed._",
+            "",
+        ]
+
+    # ---- 14.3 lane A's budget extension -------------------------------------
+    out += ["### 14.3 Lane A's budget extension", ""]
+    ext_steps = None
+    if ext_ft is not None:
+        _d, ext_args, _line = finetune_command("lane_a", ext_ft)
+        try:
+            ext_steps = int((ext_args or {}).get("--max-steps") or 0) or None
+        except ValueError:
+            ext_steps = None
+    base_steps = ROUND2_TRAIN_STEPS + ROUND3_TRAIN_STEPS
+    out += [
+        "Round 3's lane-A loss was still falling when its budget ran out, so lane A gets a third "
+        "warm restart from its own round-3 `checkpoint-20000`"
+        + (f" for a further {fmt_int(ext_steps)} steps" if ext_steps else "")
+        + f" — {fmt_int(base_steps + (ext_steps or 0))} steps of fine-tuning in total, across "
+        "three runs, three optimizer states and two datasets. It is **one training seed**, like "
+        "every other fine-tune in this campaign, so it answers \"is this run still improving\" and "
+        "not \"does lane A keep improving\".",
+        "",
+    ]
+    scr_groups: dict[int, list[tuple[str, dict]]] = {}
+    for lbl, s in screens:
+        step = row_step(s)
+        if step is None:
+            m = re.search(r"checkpoint-(\d+)", lbl) or re.search(r"(\d{4,6})", lbl)
+            step = int(m.group(1)) if m else 0
+        scr_groups.setdefault(step, []).append((lbl, s))
+    if scr_groups:
+        pooled = {
+            step: pool_evals([dict(s, step=step) for _l, s in ents])
+            for step, ents in scr_groups.items()
+        }
+        ordered = sorted(scr_groups.items(), key=lambda kv: rank_key(pooled[kv[0]]), reverse=True)
+        out += [
+            "**The screen series.** Two 20-rollout screens per checkpoint, ranked by the "
+            "pre-registered rule with its first key summed over the two: **(successes summed over "
+            "both screens, milestone-6 rate, milestone-5 rate, step)**. Best first.",
+            "",
+            r3b_screen_table([(step, ents, pooled[step]) for step, ents in ordered], live),
+            "",
+            pick_sentence("**Lane A, extension**", pooled, expect=2 * SCREEN_ROLLOUTS)
+            + " A screen selects; it does not measure (section 9 item 1), and no number in that "
+            "table is a result.",
+            "",
+        ]
+    else:
+        out += [
+            "_No extension screen was passed (`--r3b-screen LABEL=<run folder>`), so there is no "
+            "screen series here yet._",
+            "",
+        ]
+
+    loss_rows = []
+    for label, d in (("round 3 (lane A)", r3_ft), ("the extension (lane A)", ext_ft)):
+        if d is None:
+            continue
+        tp = train_progress(d)
+        prog = (
+            f"{fmt_int(tp['step'])} of {fmt_int(tp['total'])} steps in {tp['elapsed_s'] / 3600:.2f} h"
+            if tp["step"] and tp["total"] and tp["elapsed_s"]
+            else NOT_RECORDED
+        )
+        loss_rows.append(
+            [
+                label,
+                f"`{short_path(d)}`",
+                prog,
+                loss_series(d),
+                finetune_loss(d),
+                loss_head_text(loss_head(d)),
+            ]
+        )
+    if loss_rows:
+        out += [
+            "**The loss curve, beside round 3's.** Each is sampled every 2500 steps out of the "
+            "last checkpoint's own `trainer_state.json` log history — the same reading as 10.7, "
+            "with the extension's curve next to the run it restarts from.",
+            "",
+            md_table(
+                [
+                    "run",
+                    "fine-tune run folder",
+                    "progress at this snapshot",
+                    "training loss sampled every 2500 steps",
+                    "last logged",
+                    "head of the run",
+                ],
+                loss_rows,
+            ),
+            "",
+            "Measured rather than asserted: "
+            + loss_trend(
+                [("round 3", r3_ft), ("the extension", ext_ft)],
+                thin="too few 2500-step samples on disk yet to state a trend",
+            )
+            + " The two are **not** one training curve: the optimizer state and the schedule "
+            "restart at the join, so a loss that keeps falling across it is not evidence that one "
+            "descent continued.",
+            "",
+        ]
+    else:
+        out += [
+            "_Neither `--r3b-ext-finetune` nor `--r3b-r3-finetune` was passed, so no loss curve is "
+            "shown here._",
+            "",
+        ]
+
+    if ext_rows:
+        out += ["**The extension's 200-rollout rows.**", "", r3b_row_table(ext_rows, held_out_from, live, mixed), ""]
+    else:
+        out += [
+            "_No 200-rollout row of the extension yet: no `--r3b-row` measures a checkpoint under "
+            + (f"`{short_path(ext_ft)}`." if ext_ft is not None else "an extension fine-tune folder.")
+            + "_",
+            "",
+        ]
+
+    head_a = next((r for _l, r in r3_headline if lane_of(r) == "lane_a"), None)
+    y_live = live_restrict(head_a, held_out_from) if head_a is not None else None
+    best = None
+    for lbl, r in ext_rows:
+        lv = live_restrict(r, held_out_from)
+        if lv["n"] and (best is None or lv["n_success"] >= best[2]["n_success"]):
+            best = (lbl, r, lv)
+    total_steps = base_steps + ((best and row_step(best[1])) or ext_steps or 0)
+    if best is not None and y_live is not None and y_live["n"]:
+        out += [
+            f"**Lane A at {steps_text(total_steps)} is {100 * best[2]['success_rate']:.0f} % vs "
+            f"{100 * y_live['success_rate']:.0f} % at {steps_text(base_steps)}** — "
+            f"{count_text(best[2])} ({ci_text(best[2])}) on the extension's best row (`{best[0]}`) "
+            f"against {count_text(y_live)} ({ci_text(y_live)}) on lane A's round-3 headline row, "
+            "both over the live episodes of the held-out slice.",
+            "",
+        ]
+    else:
+        missing = []
+        if best is None:
+            missing.append("no extension row has a live held-out episode yet")
+        if y_live is None or not y_live["n"]:
+            missing.append("lane A's round-3 headline row has no live held-out episode in this report")
+        out += [
+            f"_The sentence \"lane A at {steps_text(total_steps)} is X % vs Y % at "
+            f"{steps_text(base_steps)}\" cannot be computed yet: " + "; ".join(missing) + "._",
+            "",
+        ]
+
+    # ---- 14.4 the determinism probe -----------------------------------------
+    out += ["### 14.4 The determinism probe (WP 12.3)", "", probe_block(probe), ""]
+
+    # ---- 14.5 notes ----------------------------------------------------------
+    out += ["### 14.5 Notes", ""]
+    out += ["\n".join(f"- {n}" for n in notes) if notes else "_No `--r3b-note` was passed._", ""]
+
+    # ---- 14.6 what round 3b does not support ---------------------------------
+    out += [
+        "### 14.6 What round 3b does not support",
+        "",
+        "1. **It is a re-measurement, not a new comparison.** The checkpoints are round 3's; only "
+        "the evaluation is new. Nothing here touches the training-seed limitation — each lane is "
+        "still **one fine-tune run**, and section 9 item 3 stands unchanged as the largest "
+        "limitation of the whole bake-off.",
+        "2. **Two seeds bound the sampler, not the run-to-run spread.** A seed pins the spawn and "
+        "the per-episode reseed and nothing else (harness debt (j)); two seeded rows of one "
+        "checkpoint are two draws, so 14.2's difference is a lower bound on the spread rather than "
+        "a measurement of it.",
+        "3. **The load is matched, not controlled.** These rows share one node and one wall-clock "
+        "window, which is strictly better than measuring them hours apart — but nothing was held "
+        "fixed about what else the node was doing, and the dead-episode artefact is load-dependent "
+        "(10.3a) and still unfixed.",
+        "4. **The extension is more steps on the same data.** It asks whether this run was still "
+        "improving; it does not separate \"more steps\" from \"more steps on this dataset\", and it "
+        "says nothing about lane B, which was not extended.",
+        "5. **The probe takes the simulator out.** It bounds the policy function — one recorded "
+        "request in, one action chunk out — and therefore cannot see anything carried across "
+        "resets in PhysX, in the renderer or in the observation path, which is where the bistable "
+        "regime (harness debt (f)) most plausibly lives.",
+        "6. **A row still in flight is not a row.** Every partial row above carries its episode "
+        "count and is ranked against nothing; a partial count read as a result is the "
+        "1/7-instead-of-16/20 mistake of section 9 item 6.",
+        "",
+        "**Harness debts carried forward** — the list as it stood at the P11 close, unchanged and "
+        "not re-derived. Round 3b closes none of them:",
+        "",
+    ]
+    out += [f"- {d}" for d in HARNESS_DEBTS]
+    out += [
+        "",
+        "**Slot for what this generator cannot compute.** Limitations that are not derivable from "
+        "the run folders — WP 12.3b and WP 12.4 outcomes, orchestrator judgements, anything "
+        "measured outside a run folder — belong here and arrive as `--r3b-note <text>`; the "
+        "bullets passed to this run are in 14.5"
+        + (" (none were passed)." if not notes else f" ({len(notes)} passed).")
+        + " The generator infers nothing into this slot.",
+    ]
+    return "\n".join(out).rstrip("\n")
 
 
 ROW_KEYS = [c[0] for c in CATEGORIES]
@@ -3118,6 +3944,41 @@ def main(argv: list[str] | None = None) -> int:
         help="one run of the paired under-load test of `--fresh-first-obs`; repeatable. "
              "LABEL is free text (the table's row name)",
     )
+    ap.add_argument(
+        "--r3b-row", action="append", default=[], metavar="LABEL=RUN",
+        help="a round-3b 200-rollout row (P12): the concurrent seeded re-measurements and "
+             "the lane-A extension's rows; repeatable. LABEL is free text (the table's row "
+             "name, e.g. A_R3_20000_s05)",
+    )
+    ap.add_argument(
+        "--r3b-screen", action="append", default=[], metavar="LABEL=RUN",
+        help="a round-3b 20-rollout screen of a lane-A extension checkpoint; repeatable. "
+             "Two per checkpoint is the pre-registered design, and both are reported",
+    )
+    ap.add_argument(
+        "--r3b-segment", action="append", default=[], metavar="LABEL=RUN:FIRST-LAST",
+        help="one regime segment of a round-3b row (inclusive episode range); repeatable",
+    )
+    ap.add_argument(
+        "--r3b-ext-finetune", type=Path,
+        help="run folder of lane A's budget extension (WP 12.2): its trainer_state.json "
+             "supplies the loss curve and its checkpoint dir identifies the extension's rows",
+    )
+    ap.add_argument(
+        "--r3b-r3-finetune", type=Path,
+        help="run folder of lane A's round-3 fine-tune, for the loss curve the extension is "
+             "plotted against",
+    )
+    ap.add_argument(
+        "--r3b-probe", type=Path,
+        help="the determinism probe's markdown or JSON (WP 12.3); its VERDICT line is quoted "
+             "verbatim",
+    )
+    ap.add_argument(
+        "--r3b-note", action="append", default=[], metavar="TEXT",
+        help="a free-text paragraph appended to round 3b's 'what this does not support' "
+             "subsection; repeatable",
+    )
     args = ap.parse_args(argv)
     rows = parse_rows(
         args.row,
@@ -3175,6 +4036,20 @@ def main(argv: list[str] | None = None) -> int:
         if not (rp / "out" / "eval" / "eval_results.csv").is_file():
             raise SystemExit(f"[aggregate] --r3-segment {label}: {rp} has no out/eval/eval_results.csv")
         segments.append((label.strip(), rp, first, last))
+    r3b_segments: list[tuple[str, Path, int, int]] = []
+    for spec in args.r3b_segment:
+        if "=" not in spec or ":" not in spec:
+            raise SystemExit(f"[aggregate] --r3b-segment wants LABEL=RUN:FIRST-LAST, got {spec!r}")
+        label, _sep, rest = spec.partition("=")
+        run, _c, span = rest.rpartition(":")
+        try:
+            first, last = (int(x) for x in span.split("-", 1))
+        except ValueError:
+            raise SystemExit(f"[aggregate] --r3b-segment span must be FIRST-LAST, got {span!r}")
+        rp = Path(run.strip()).expanduser().resolve()
+        if not (rp / "out" / "eval" / "eval_results.csv").is_file():
+            raise SystemExit(f"[aggregate] --r3b-segment {label}: {rp} has no out/eval/eval_results.csv")
+        r3b_segments.append((label.strip(), rp, first, last))
     mixtures = [Path(m).expanduser().resolve() for m in args.r3_mixture]
     rescreens = labelled(args.r3_rescreen, "--r3-rescreen")
     screens_until = None
@@ -3186,6 +4061,15 @@ def main(argv: list[str] | None = None) -> int:
         rows=rows,
         held_out_from=args.held_out_from,
         r3_rows=parse_r3_rows(args.r3_row),
+        r3b_rows=labelled(args.r3b_row, "--r3b-row"),
+        r3b_screens=labelled(args.r3b_screen, "--r3b-screen"),
+        r3b_segments=r3b_segments,
+        r3b_ext_ft=(Path(args.r3b_ext_finetune).expanduser().resolve()
+                    if args.r3b_ext_finetune else None),
+        r3b_r3_ft=(Path(args.r3b_r3_finetune).expanduser().resolve()
+                   if args.r3b_r3_finetune else None),
+        r3b_probe=(Path(args.r3b_probe).expanduser().resolve() if args.r3b_probe else None),
+        r3b_notes=list(args.r3b_note),
         r3_oracle_b=r3_oracle_b,
         r2_reruns=r2_reruns,
         artefact_runs=artefact_runs,
