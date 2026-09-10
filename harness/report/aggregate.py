@@ -1512,6 +1512,55 @@ def complete_screens(screens: dict[int, dict], expect: int = SCREEN_ROLLOUTS) ->
     return {s: r for s, r in screens.items() if r["n"] == expect}
 
 
+def screen_pair_spread(groups: dict[int, list[tuple[str, dict]]]) -> str:
+    """How far apart are two screens of ONE checkpoint? Section 9 item 1 says a screen
+    selects rather than measures; this puts a number on it for this series instead of
+    leaving it as a maxim. Only checkpoints with exactly two finished screens count —
+    a pair is the unit, and a partial screen is not a screen."""
+    pairs = []
+    for step, ents in sorted(groups.items()):
+        done = [s for _l, s in ents if s["n"] == SCREEN_ROLLOUTS]
+        if len(done) != 2:
+            continue
+        a, b = (s["n_success"] for s in done)
+        la, lb = (live_restrict(s, 0) for s in done)
+        da, db = (len(dead_indices(s)) for s in done)
+        pairs.append((step, a, b, abs(a - b), la, lb, da, db))
+    if len(pairs) < 2:
+        return (
+            "_Fewer than two checkpoints have both screens in, so the screen-to-screen spread of "
+            "this series is not yet measurable._"
+        )
+    diffs = sorted(p[3] for p in pairs)
+    med = statistics.median(diffs)
+    worst = max(pairs, key=lambda p: p[3])
+    _st, wa, wb, wd, wla, wlb, wda, wdb = worst
+    bits = ", ".join(f"`{p[0]}` {p[1]}/{p[2]}" for p in pairs)
+    txt = (
+        f"**How much of that ranking is noise.** The two screens of one checkpoint — identical "
+        f"weights, identical binding, one device each, minutes apart — differ by a median of "
+        f"**{fmt_int(int(med)) if med == int(med) else f'{med:.1f}'} successes out of 20** across "
+        f"the {fmt_int(len(pairs))} checkpoint(s) with both screens in, and by as much as "
+        f"**{fmt_int(wd)}** (`checkpoint-{_st}`: {wa}/20 against {wb}/20). Pairs: {bits}. "
+    )
+    if wla["n"] and wlb["n"]:
+        txt += (
+            f"The worst pair is not only the dead-start artefact: on **live** episodes alone it is "
+            f"{wla['n_success']}/{wla['n']} against {wlb['n_success']}/{wlb['n']} "
+            f"({100 * wla['success_rate']:.0f} % against "
+            f"{100 * wlb['success_rate']:.0f} %), with "
+            f"{wda} and {wdb} dead episodes respectively. "
+        )
+    txt += (
+        "So the pre-registered rule is being applied to a key whose sampling noise is of the same "
+        "order as the differences between neighbouring checkpoints, and the checkpoint it selects "
+        "should be read as *a good one on this series*, not as *the best one*. This is why the "
+        "selection is followed by 200-rollout rows and why those rows, not the screens, carry the "
+        "verdict."
+    )
+    return txt
+
+
 def pick_sentence(label: str, screens: dict[int, dict], expect: int = SCREEN_ROLLOUTS) -> str:
     """Who leads a screening series under the pre-registered rule
     (successes, milestone-6 rate, milestone-5 rate, step) — never mean progress —
@@ -3709,6 +3758,8 @@ def round3b_section(
             pick_sentence("**Lane A, extension**", pooled, expect=2 * SCREEN_ROLLOUTS)
             + " A screen selects; it does not measure (section 9 item 1), and no number in that "
             "table is a result.",
+            "",
+            screen_pair_spread(scr_groups),
             "",
         ]
     else:
