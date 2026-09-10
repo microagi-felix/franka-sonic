@@ -3275,6 +3275,30 @@ HARNESS_DEBTS = [
     "19/20 on one seed, 1 of 20 episode lengths equal), so it buys a paired design and nothing more.",
 ]
 
+# Debts round 3b (P12) added. Kept separate from HARNESS_DEBTS so the P11 list above stays the
+# list P11 closed with and can be diffed against it.
+P12_NEW_DEBTS = [
+    "(k) **The simulator's step time is not recorded per episode by any run in this campaign.** "
+    "14.1 rules out GPU-side contention as the per-episode trigger of a dead start — replan "
+    "latency, which is the policy server's own inference time, is indistinguishable across "
+    "successful, live-failing and dead episodes (104.6 / 103.6 / 103.3 ms median-of-medians on "
+    "one lane-A row). The CPU-side proxy is the one that is missing, and it is the first thing to "
+    "instrument if anyone returns to the artefact.",
+    "(l) **A run's episodes are not always exchangeable, so some printed intervals are too "
+    "narrow.** Every interval in this report is a binomial interval on a run's live episodes, "
+    "which assumes their order carries no information. Two permutation runs-tests say that is "
+    "sometimes false. On the DEAD marks it is badly false: two of the four round-3b rows have "
+    "fewer, longer runs of dead episodes than independence allows (p = 0.0001 and p < 0.0001), "
+    "the extreme being 19 consecutively dead episodes inside a 200-rollout row. On the LIVE marks "
+    "— the ones the rates are actually computed from — it is usually fine: "
+    "`harness/report/run_autocorr.py` clears five of seven rows tested, correctly flags the "
+    "already-segmented `eval-24` (p < 0.0001, longest live-failure run 45), and flags one row "
+    "that no segmentation rule catches, `B_R3_10000_s09` (21 runs against 28.5 expected, "
+    "p = 0.0055, longest live-failure run 5). That row's 87–95 % is therefore too narrow by an "
+    "unquantified amount. The debt is that no interval in this report is corrected for "
+    "within-run autocorrelation and only these seven rows have been tested at all.",
+]
+
 
 def probe_block(probe: Path | None) -> str:
     """The WP 12.3 determinism probe: its `VERDICT:` line verbatim, and the
@@ -3823,10 +3847,42 @@ def round3b_section(
         "1/7-instead-of-16/20 mistake of section 9 item 6.",
         "",
         "**Harness debts carried forward** — the list as it stood at the P11 close, unchanged and "
-        "not re-derived. Round 3b closes none of them:",
+        "not re-derived:",
         "",
     ]
     out += [f"- {d}" for d in HARNESS_DEBTS]
+    # Whether (e) is closed is a fact about the repo, so it is checked rather than asserted:
+    # the two files the debt names have to exist as repo files, not under /tmp.
+    e_closed = [p for p in ("harness/screen_watcher.py", "harness/rank_screens.py")
+                if (REPO / p).is_file()]
+    out += [
+        "",
+        "**What round 3b changed in that list.** "
+        + (
+            "**(e) is closed** — "
+            + " and ".join(f"`{p}`" for p in e_closed)
+            + " are repo files now, with the launcher-log run attribution and the zombie reap "
+            "that had lived only in `/tmp/franka-sonic/p11/watcher.py`, and the selection rule "
+            "beside them. This is the first debt in the campaign to be closed rather than "
+            "carried."
+            if len(e_closed) == 2
+            else "**(e) is still open**: "
+            + (
+                f"only {', '.join(f'`{p}`' for p in e_closed)} is in the repo."
+                if e_closed
+                else "neither `harness/screen_watcher.py` nor `harness/rank_screens.py` is in "
+                "the repo."
+            )
+        )
+        + " **(f) is re-shaped, not closed**: 14.4's probe puts the lane-B regime *outside* the "
+        "policy function, and 14.1 puts a 19-episode dead latch that later released inside a "
+        "**lane-A** row — so (f) is a property of the evaluation, not of lane B. Nothing else in "
+        "the list moved.",
+        "",
+        "**New in round 3b:**",
+        "",
+    ]
+    out += [f"- {d}" for d in P12_NEW_DEBTS]
     out += [
         "",
         "**Slot for what this generator cannot compute.** Limitations that are not derivable from "
