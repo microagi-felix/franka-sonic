@@ -3836,24 +3836,62 @@ def round3b_section(
 
     head_a = next((r for _l, r in r3_headline if lane_of(r) == "lane_a"), None)
     y_live = live_restrict(head_a, held_out_from) if head_a is not None else None
-    best = None
-    for lbl, r in ext_rows:
-        lv = live_restrict(r, held_out_from)
-        if lv["n"] and (best is None or lv["n_success"] >= best[2]["n_success"]):
-            best = (lbl, r, lv)
-    total_steps = base_steps + ((best and row_step(best[1])) or ext_steps or 0)
-    if best is not None and y_live is not None and y_live["n"]:
+    # "Lane A at 60k" means the extension's LAST checkpoint — 40 000 + 20 000 steps — and not
+    # whichever of the two rows came out higher. Quoting the better of two rows under that
+    # sentence would be a post-hoc selection on the very quantity being reported, so the
+    # headline row here is the one whose checkpoint is the extension's final step, and the
+    # other row is quoted beside it, labelled as the screen-selected checkpoint that it is.
+    with_live = [(lbl, r, live_restrict(r, held_out_from)) for lbl, r in ext_rows]
+    with_live = [t for t in with_live if t[2]["n"]]
+    last_step = max((row_step(r) or 0 for _l, r, _lv in with_live), default=0)
+    target_step = ext_steps or last_step
+    last = next((t for t in with_live if (row_step(t[1]) or 0) == target_step), None)
+    if last is None and with_live:
+        # the final checkpoint has no row (yet); fall back to the deepest one there is, and say so
+        last = max(with_live, key=lambda t: row_step(t[1]) or 0)
+    others = [t for t in with_live if t is not last]
+    total_steps = base_steps + ((last and row_step(last[1])) or target_step or 0)
+    if last is not None and y_live is not None and y_live["n"]:
+        is_final = (row_step(last[1]) or 0) == target_step
         out += [
-            f"**Lane A at {steps_text(total_steps)} is {100 * best[2]['success_rate']:.0f} % vs "
+            f"**Lane A at {steps_text(total_steps)} is {100 * last[2]['success_rate']:.0f} % vs "
             f"{100 * y_live['success_rate']:.0f} % at {steps_text(base_steps)}** — "
-            f"{count_text(best[2])} ({ci_text(best[2])}) on the extension's best row (`{best[0]}`) "
-            f"against {count_text(y_live)} ({ci_text(y_live)}) on lane A's round-3 headline row, "
-            "both over the live episodes of the held-out slice.",
+            f"{count_text(last[2])} ({ci_text(last[2])}) on "
+            + (
+                f"the extension's final checkpoint (`{last[0]}`)"
+                if is_final
+                else f"the deepest extension checkpoint that has a row (`{last[0]}`; the final "
+                f"checkpoint's own row is not in this report)"
+            )
+            + f" against {count_text(y_live)} ({ci_text(y_live)}) on lane A's round-3 headline "
+            "row, both over the live episodes of the held-out slice. "
+            + (
+                "The intervals "
+                + (
+                    "do not overlap, so the extension moved lane A."
+                    if not overlap(last[2]["ci95"], y_live["ci95"])
+                    else "overlap, so this budget extension did **not** separate itself from "
+                    "round 3's own 40 000-step result."
+                )
+            ),
             "",
         ]
+        if others:
+            out += [
+                "Beside it, the row of the checkpoint the screen series selected — a different "
+                "question (\"what is the best checkpoint of this run\") answered by a rule whose "
+                "noise is quantified above: "
+                + "; ".join(
+                    f"`{lbl}` ({steps_text(base_steps + (row_step(r) or 0))} total) "
+                    f"{count_text(lv)} = {100 * lv['success_rate']:.0f} % ({ci_text(lv)})"
+                    for lbl, r, lv in others
+                )
+                + ".",
+                "",
+            ]
     else:
         missing = []
-        if best is None:
+        if last is None:
             missing.append("no extension row has a live held-out episode yet")
         if y_live is None or not y_live["n"]:
             missing.append("lane A's round-3 headline row has no live held-out episode in this report")
