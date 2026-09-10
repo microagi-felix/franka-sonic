@@ -1599,3 +1599,5 @@ P12 PROBE=/tmp/franka-sonic/lane_b/2026-09-10_probe/out/probe.md
 - 2026-09-10 17:57  bakeoff lane_a/eval OK  rc=0  gpus=1  run=/tmp/franka-sonic/lane_a/2026-09-10_eval-8
 - 2026-09-10 18:43  bakeoff lane_a/eval OK  rc=0  gpus=5  run=/tmp/franka-sonic/lane_a/2026-09-10_eval-9
 - 2026-09-10 18:52  bakeoff lane_a/eval OK  rc=0  gpus=1  run=/tmp/franka-sonic/lane_a/2026-09-10_eval-10
+- 2026-09-10 19:39  bakeoff lane_a/eval OK  rc=0  gpus=5  run=/tmp/franka-sonic/lane_a/2026-09-10_eval-11
+- 2026-09-10 19:45  bakeoff lane_a/eval OK  rc=0  gpus=1  run=/tmp/franka-sonic/lane_a/2026-09-10_eval-12
