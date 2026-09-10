@@ -6,7 +6,7 @@
 #   bash harness/gates/p12.sh
 #
 # Every check is scoped to artifacts newer than P12_EPOCH. A row counts as a re-measurement
-# only if its own cmd.sh carries --server-seed and names a checkpoint-20000 (lane A) or
+# only if its own cmd.sh carries a seed (recorded as --seed N, the server's flag) and names a checkpoint-20000 (lane A) or
 # checkpoint-10000/-17500 (lane B) of a 2026-09-05 fine-tune or its final/p11 copy; a row of
 # the lane-A extension counts only if the checkpoint named in its cmd.sh is newer than the
 # epoch. Round-3 rows can therefore never satisfy a round-3b check.
@@ -55,7 +55,7 @@ count_remeasure() {  # $1 = roots, $2 = checkpoint regex -> number of qualifying
   for csv in $(find_runs "$1" -maxdepth 5 -type f -path '*_eval*/out/eval/eval_results.csv' -newermt "$EPOCH" | grep -v oracle | grep -v probe); do
     run=$(run_of_csv "$csv")
     [ -n "$(find "$run/cmd.sh" -maxdepth 0 -newermt "$EPOCH" 2>/dev/null)" ] || continue
-    grep -q -- "--server-seed" "$run/cmd.sh" 2>/dev/null || continue
+    grep -qE -- "--(server-)?seed[= ][0-9]+" "$run/cmd.sh" 2>/dev/null || continue   # cmd.sh records the server flag as --seed N
     ck=$(grep -oE '[^ "]*/checkpoint-[0-9]+' "$run/cmd.sh" 2>/dev/null | head -1)
     echo "$ck" | grep -qE "$2" || continue
     [ "$(rows "$csv")" -ge "$MIN_ROLLOUTS" ] && c=$((c + 1))
